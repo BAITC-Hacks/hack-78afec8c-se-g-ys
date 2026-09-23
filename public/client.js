@@ -10,6 +10,7 @@ const draftList = document.querySelector('#draft-list');
 const draftMessage = document.querySelector('#draft-message');
 const accept = document.querySelector('#accept-scenario');
 const resultPanel = document.querySelector('#result-panel');
+const BUDGET = 100;
 const acceptedResultStorageKey = 'qala.accepted-result.v1';
 const attemptList = document.querySelector('#attempt-list');
 const attemptHistoryEmpty = document.querySelector('#attempt-history-empty');
@@ -162,7 +163,7 @@ function localErrors() {
   const errors = [];
   if (draft.length !== 5) errors.push(text.exactFive);
   if (new Set(draft.map((item) => item.measureId)).size !== draft.length) errors.push(text.noDuplicates);
-  if (draft.reduce((sum, item) => sum + measureOf(item.measureId).cost, 0) > 100) errors.push(text.overBudget);
+  if (draft.reduce((sum, item) => sum + measureOf(item.measureId).cost, 0) > BUDGET) errors.push(text.overBudget);
   const directions = {};
   draft.forEach((item) => { const direction = measureOf(item.measureId).direction; directions[direction] = (directions[direction] || 0) + 1; });
   if (Object.values(directions).some((count) => count > 2)) errors.push(text.directionLimit);
@@ -177,7 +178,7 @@ function renderDraft() {
   const cost = draft.reduce((sum, item) => sum + measureOf(item.measureId).cost, 0);
   document.querySelector('#draft-count').textContent = `${draft.length}/5`;
   document.querySelector('#draft-cost').textContent = cost;
-  document.querySelector('#draft-remaining').textContent = 100 - cost;
+  document.querySelector('#draft-remaining').textContent = BUDGET - cost;
   draftList.innerHTML = draft.map((item, index) => `<li class="draft-item"><span><b>${item.measureId}</b> · ${item.districtName || districtNameFor(item) || text.wholeCity}</span><button type="button" data-remove="${index}"${draftAccepted ? ' disabled' : ''}>${text.remove}</button></li>`).join('');
   const errors = localErrors();
   draftMessage.textContent = errors.join(' ');
@@ -194,6 +195,11 @@ function addMeasure(button) {
   const districtName = select?.selectedOptions[0]?.textContent;
   if (measureOf(measureId).scope === 'district' && !districtId) { draftMessage.textContent = text.selectDistrictFirst; return; }
   if (draft.some((item) => item.measureId === measureId)) { draftMessage.textContent = text.alreadySelected; return; }
+  const currentCost = draft.reduce((sum, item) => sum + measureOf(item.measureId).cost, 0);
+  if (currentCost + measureOf(measureId).cost > BUDGET) {
+    draftMessage.textContent = text.overBudget;
+    return;
+  }
   draft.push({ measureId, districtId, districtName });
   renderDraft();
 }
