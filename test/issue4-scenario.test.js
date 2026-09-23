@@ -99,3 +99,25 @@ test('Q8 calculation is independent of decision order and applies geography and 
     assert.equal(esil.changes.C2, 4.375);
   });
 });
+
+test('accepted scenario includes a valid positive single-replacement recommendation', async () => {
+  await withServer(async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/scenarios/accept`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decisions: officialDecisions }),
+    });
+    const payload = await response.json();
+    const recommendation = payload.result.recommendation;
+
+    assert.equal(response.status, 200);
+    assert.equal(recommendation.found, true);
+    assert.ok(recommendation.scoreDelta > 0);
+    assert.equal(recommendation.decisions.length, 5);
+    assert.deepEqual(recommendation.replacedDecision, { measureId: 'M5', districtId: 'saryarka' });
+    assert.deepEqual(recommendation.replacementDecision, { measureId: 'M3', districtId: 'nura' });
+    assert.equal(recommendation.result.accepted, true);
+    assert.ok(recommendation.result.score > payload.result.score);
+    assert.ok(recommendation.impacts.some((impact) => impact.gains.length > 0));
+  });
+});

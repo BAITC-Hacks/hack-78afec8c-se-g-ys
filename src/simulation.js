@@ -216,7 +216,7 @@ function findRecommendation(decisions, baseValidation, baseState) {
     costDelta: best.validation.cost - baseValidation.cost,
     score: best.state.score,
     scoreDelta: best.scoreDelta,
-    result: { accepted: true, result },
+    result: { accepted: true, decisions: best.decisions, ...result },
     impacts: impactList(baseState, best.state),
   };
 }
