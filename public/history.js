@@ -106,6 +106,24 @@
         storage.setItem(STORAGE_KEY, JSON.stringify(attempts));
         return immutableCopy(attempts[index]);
       },
+      saveGlobalComparison(attemptId, comparison) {
+        if (!comparison || comparison.kind !== 'global_optimum') {
+          throw new TypeError('A completed global comparison is required');
+        }
+        const attempts = read();
+        const index = attempts.findIndex((attempt) => attempt.id === attemptId);
+        if (index < 0) throw new Error('Accepted attempt not found');
+        attempts[index] = { ...attempts[index], globalComparison: comparison };
+        storage.setItem(STORAGE_KEY, JSON.stringify(attempts));
+        return immutableCopy(attempts[index]);
+      },
+      getGlobalComparison(attemptId, { catalogVersion, modelVersion } = {}) {
+        const comparison = read().find((attempt) => attempt.id === attemptId)?.globalComparison;
+        if (!comparison) return null;
+        if ((catalogVersion && comparison.catalogVersion !== catalogVersion)
+          || (modelVersion && comparison.modelVersion !== modelVersion)) return null;
+        return immutableCopy(comparison);
+      },
     };
   }
 
