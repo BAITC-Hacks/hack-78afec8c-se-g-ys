@@ -2,6 +2,8 @@ const { districts, indicators, measures } = require('./data');
 
 const BUDGET = 100;
 const HORIZON_QUARTERS = 8;
+const CATALOG_VERSION = 'qala-catalog-v1';
+const MODEL_VERSION = 'qala-score-q8-v1';
 const weights = { T1: 0.10, T2: 0.10, E1: 0.09, E2: 0.11, S1: 0.11, S2: 0.11, B1: 0.09, B2: 0.09, C1: 0.10, C2: 0.10 };
 const districtById = new Map(districts.map((district) => [district.id, district]));
 const measureById = new Map(measures.map((measure) => [measure.id, measure]));
@@ -133,6 +135,117 @@ function candidateDecisions() {
   return measures.flatMap((measure) => measure.scope === 'city'
     ? [{ measureId: measure.id, districtId: null }]
     : districts.map((district) => ({ measureId: measure.id, districtId: district.id })));
+}
+
+function compareDecisionLists(left, right) {
+  for (let index = 0; index < left.length; index += 1) {
+    const difference = compareDecisions(left[index], right[index]);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
+function isBetterGlobalCandidate(candidate, best) {
+  if (!best || candidate.state.score > best.state.score) return true;
+  if (candidate.state.score < best.state.score) return false;
+  if (candidate.validation.cost < best.validation.cost) return true;
+  if (candidate.validation.cost > best.validation.cost) return false;
+  return compareDecisionLists(candidate.decisions, best.decisions) < 0;
+}
+
+function forEachGlobalScenario(visitor) {
+  function assignTargets(selectedMeasures, index, decisions) {
+    if (index === selectedMeasures.length) {
+      visitor(decisions);
+      return;
+    }
+    const measure = selectedMeasures[index];
+    const targets = measure.scope === 'city' ? [null] : districts.map((district) => district.id);
+    for (const districtId of targets) assignTargets(selectedMeasures, index + 1, [...decisions, { measureId: measure.id, districtId }]);
+  }
+
+  function chooseMeasures(start, selectedMeasures) {
+    if (selectedMeasures.length === 5) {
+      assignTargets(selectedMeasures, 0, []);
+      return;
+    }
+    const remaining = 5 - selectedMeasures.length;
+    for (let index = start; index <= measures.length - remaining; index += 1) chooseMeasures(index + 1, [...selectedMeasures, measures[index]]);
+  }
+
+  chooseMeasures(0, []);
+}
+
+let cachedGlobalOptimum = null;
+
+function globalDecisionDetails(decisions) {
+  return decisions.map((decision) => {
+    const measure = measureById.get(decision.measureId);
+    const district = decision.districtId ? districtById.get(decision.districtId) : null;
+    return {
+      measureId: measure.id,
+      districtId: decision.districtId,
+      direction: measure.direction,
+      scope: measure.scope,
+      cost: measure.cost,
+      delay: measure.delay,
+      name: measure.name,
+      target: district?.name ?? 'whole_city',
+    };
+  });
+}
+
+function findGlobalOptimum() {
+  if (cachedGlobalOptimum) return JSON.parse(JSON.stringify(cachedGlobalOptimum));
+
+  let best = null;
+  let tieCount = 0;
+  let validScenarioCount = 0;
+  forEachGlobalScenario((decisions) => {
+    const validation = validateScenario(decisions);
+    if (!validation.valid) return;
+    validScenarioCount += 1;
+    const candidate = { decisions: canonicalDecisions(decisions), validation, state: calculateState(decisions) };
+    if (!best || candidate.state.score > best.state.score) {
+      best = candidate;
+      tieCount = 1;
+      return;
+    }
+    if (candidate.state.score === best.state.score) {
+      tieCount += 1;
+      if (isBetterGlobalCandidate(candidate, best)) best = candidate;
+    }
+  });
+
+  cachedGlobalOptimum = {
+    decisions: best.decisions,
+    decisionDetails: globalDecisionDetails(best.decisions),
+    cost: best.validation.cost,
+    score: best.state.score,
+    scoreDisplay: best.state.score.toFixed(5),
+    tieCount,
+    validScenarioCount,
+  };
+  return JSON.parse(JSON.stringify(cachedGlobalOptimum));
+}
+
+function compareWithGlobalOptimum(acceptedCalculation) {
+  if (!acceptedCalculation?.accepted) throw new TypeError('An accepted scenario is required for global comparison');
+  const global = findGlobalOptimum();
+  const participant = {
+    decisions: canonicalDecisions(acceptedCalculation.decisions),
+    cost: acceptedCalculation.result.cost,
+    score: acceptedCalculation.result.score,
+    scoreDisplay: acceptedCalculation.result.score.toFixed(5),
+  };
+  return {
+    kind: 'global_optimum',
+    catalogVersion: CATALOG_VERSION,
+    modelVersion: MODEL_VERSION,
+    participant,
+    global,
+    delta: global.score - participant.score,
+  };
 }
 
 function impactList(baseState, candidateState) {
@@ -381,4 +494,15 @@ function calculateScenario(decisions) {
   };
 }
 
-module.exports = { BUDGET, HORIZON_QUARTERS, validateScenario, calculateScenario, findRecommendation };
+module.exports = {
+  BUDGET,
+  HORIZON_QUARTERS,
+  CATALOG_VERSION,
+  MODEL_VERSION,
+  validateScenario,
+  calculateScenario,
+  findRecommendation,
+  findGlobalOptimum,
+  compareWithGlobalOptimum,
+  isBetterGlobalCandidate,
+};

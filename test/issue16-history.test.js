@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { calculateScenario } = require('../src/simulation');
+const { createServer } = require('../server');
 const { createAttemptHistory } = require('../public/history');
 
 class MemoryStorage {
@@ -85,4 +86,86 @@ test('a saved global comparison is unavailable when its catalog or model version
   assert.equal(history.getGlobalComparison(attempt.id, {
     catalogVersion: 'qala-catalog-v1', modelVersion: 'qala-score-q8-v2',
   }), null);
+});
+
+test('a version-mismatched What If request preserves its accepted attempt and the bilingual client offers a retryable editable copy', async () => {
+  const server = createServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  try {
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const accepted = await fetch(`${baseUrl}/api/scenarios/accept`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ attemptId: 'attempt-version-safe', decisions: participantDecisions, locale: 'ru' }),
+    });
+    const original = await accepted.json();
+    assert.equal(accepted.status, 200);
+
+    const stale = await fetch(`${baseUrl}/api/attempts/attempt-version-safe/what-if`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ locale: 'ru', catalogVersion: 'obsolete-catalog' }),
+    });
+    assert.equal(stale.status, 409);
+    assert.equal((await stale.json()).error, 'comparison_version_mismatch');
+
+    const replay = await fetch(`${baseUrl}/api/scenarios/accept`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ attemptId: 'attempt-version-safe', decisions: participantDecisions, locale: 'ru' }),
+    });
+    assert.equal(replay.status, 200);
+    assert.equal((await replay.json()).result.score, original.result.score);
+
+    const [ruPage, kkPage, client] = await Promise.all([
+      fetch(`${baseUrl}/`).then((response) => response.text()),
+      fetch(`${baseUrl}/?locale=kk`).then((response) => response.text()),
+      fetch(`${baseUrl}/client.js`).then((response) => response.text()),
+    ]);
+    assert.match(ruPage, /qalaGlobalComparisonVersions/);
+    assert.match(kkPage, /What If жаһандық салыстыруы/);
+    assert.match(client, /data-copy-global-comparison/);
+    assert.match(client, /getGlobalComparison/);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test('the explicit global comparison response can be stored with its attempt and copied as an unaccepted draft source', async () => {
+  const server = createServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  try {
+    const baseUrl = `http://127.0.0.1:${port}`;
+    await fetch(`${baseUrl}/api/scenarios/accept`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ attemptId: 'attempt-revisit', decisions: participantDecisions, locale: 'kk' }),
+    });
+    const response = await fetch(`${baseUrl}/api/attempts/attempt-revisit/what-if`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ locale: 'kk', catalogVersion: 'qala-catalog-v1', modelVersion: 'qala-score-q8-v1' }),
+    });
+    const { comparison } = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(comparison.global.decisions.length, 5);
+    assert.equal(comparison.global.decisionDetails.length, 5);
+    assert.equal(typeof comparison.global.decisionDetails[0].direction, 'string');
+    assert.ok(comparison.global.score >= comparison.participant.score);
+
+    const storage = new MemoryStorage();
+    const history = createAttemptHistory(storage, { id: () => 'attempt-revisit' });
+    const original = history.append(calculateScenario(participantDecisions));
+    history.saveGlobalComparison(original.id, comparison);
+    const reopened = createAttemptHistory(storage).get(original.id);
+    const copiedDraft = reopened.globalComparison.global.decisions.map((decision) => ({ ...decision }));
+
+    assert.deepEqual(reopened.decisions, participantDecisions);
+    assert.deepEqual(copiedDraft, comparison.global.decisions);
+    assert.equal(reopened.result.score, original.result.score);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
 });
