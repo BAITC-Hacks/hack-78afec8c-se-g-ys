@@ -4,7 +4,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { catalogPayload, localizedDistrictName, normalizeLocale } = require('./src/data');
 const { renderPage } = require('./src/view');
-const { calculateScenario } = require('./src/simulation');
+const { calculateScenario, CATALOG_VERSION, MODEL_VERSION, compareWithGlobalOptimum } = require('./src/simulation');
 const { analyzeScenario } = require('./src/ai-analysis');
 const { createOpenAiAnalysisProvider } = require('./src/openai-analysis-provider');
 const { createAiAnalysisService } = require('./src/ai-analysis');
@@ -161,6 +161,37 @@ function createServer({ analysisProvider = createOpenAiAnalysisProvider(), aiPro
         return sendJson(response, 200, { accepted: true, ...await analyzeScenario(calculation, analysisProvider) });
       } catch {
         return sendJson(response, 400, { accepted: false, errors: [{ code: 'invalid_json', message: 'Request body must be valid JSON' }] });
+      }
+    }
+    const whatIfMatch = url.pathname.match(/^\/api\/attempts\/([^/]+)\/what-if$/);
+    if (request.method === 'POST' && whatIfMatch) {
+      try {
+        const body = await readJson(request);
+        const attemptId = decodeURIComponent(whatIfMatch[1]);
+        const context = attempts.get(attemptId);
+        if (!context) return sendJson(response, 404, { error: 'Attempt not found' });
+        if ((body.catalogVersion && body.catalogVersion !== CATALOG_VERSION)
+          || (body.modelVersion && body.modelVersion !== MODEL_VERSION)) {
+          return sendJson(response, 409, {
+            error: 'comparison_version_mismatch',
+            catalogVersion: CATALOG_VERSION,
+            modelVersion: MODEL_VERSION,
+          });
+        }
+        const locale = normalizeLocale(body.locale);
+        const comparison = compareWithGlobalOptimum(context.calculation);
+        return sendJson(response, 200, {
+          attemptId,
+          locale,
+          comparison: {
+            ...comparison,
+            notice: locale === 'kk'
+              ? 'Бұл синтетикалық каталог пен формуланың максимумы; ол нақты қала саясатының ұсынымы емес.'
+              : 'Это максимум синтетического каталога и формулы, а не рекомендация реальной городской политики.',
+          },
+        });
+      } catch {
+        return sendJson(response, 400, { error: 'invalid_json' });
       }
     }
     const analysisMatch = url.pathname.match(/^\/api\/attempts\/([^/]+)\/analysis$/);

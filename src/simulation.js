@@ -2,6 +2,8 @@ const { districts, indicators, measures } = require('./data');
 
 const BUDGET = 100;
 const HORIZON_QUARTERS = 8;
+const CATALOG_VERSION = 'qala-catalog-v1';
+const MODEL_VERSION = 'qala-score-q8-v1';
 const weights = { T1: 0.10, T2: 0.10, E1: 0.09, E2: 0.11, S1: 0.11, S2: 0.11, B1: 0.09, B2: 0.09, C1: 0.10, C2: 0.10 };
 const districtById = new Map(districts.map((district) => [district.id, district]));
 const measureById = new Map(measures.map((measure) => [measure.id, measure]));
@@ -77,9 +79,9 @@ function addEffect(values, districtId, indicatorId, effect) {
   values[districtId][indicatorId] += effect;
 }
 
-function calculateState(decisions) {
+function calculateValues(decisions, canonicalize = true) {
   const values = initialIndicators();
-  for (const decision of canonicalDecisions(decisions)) {
+  for (const decision of canonicalize ? canonicalDecisions(decisions) : decisions) {
     const measure = measureById.get(decision.measureId);
     const targets = measure.scope === 'city' ? districts.map((district) => district.id) : [decision.districtId];
     const factor = (HORIZON_QUARTERS - measure.delay) / HORIZON_QUARTERS;
@@ -98,6 +100,11 @@ function calculateState(decisions) {
   if (byId.has('M10') && byId.has('M12')) activate('M10+M12', 'M10 + M12', byId.get('M10').districtId, 'B1', 2);
   if (byId.has('M5') && byId.has('M6')) activate('M5+M6', 'M5 + M6', byId.get('M5').districtId, 'E2', 2);
 
+  return { values, synergies };
+}
+
+function calculateState(decisions) {
+  const { values, synergies } = calculateValues(decisions);
   const districtResults = districts.map((district) => {
     const finalIndicators = Object.fromEntries(Object.entries(values[district.id]).map(([id, value]) => [id, Math.min(100, Math.max(0, value))]));
     const changes = Object.fromEntries(indicators.map((indicator) => [indicator.id, finalIndicators[indicator.id] - district.indicators[indicator.id]]));
@@ -108,6 +115,24 @@ function calculateState(decisions) {
   const weakestDistrict = districtResults.reduce((weakest, district) => district.score < weakest.score ? district : weakest, districtResults[0]);
   const criticalIndicators = districtResults.flatMap((district) => indicators.filter((indicator) => district.indicators[indicator.id] < 40).map((indicator) => ({ districtId: district.id, districtName: district.name, indicatorId: indicator.id, value: district.indicators[indicator.id] })));
   return { districtResults, weightedAverage, weakestDistrict, criticalIndicators, synergies, score: 0.7 * weightedAverage + 0.3 * weakestDistrict.score - criticalIndicators.length };
+}
+
+function calculateScore(decisions) {
+  const { values } = calculateValues(decisions, false);
+  let weightedAverage = 0;
+  let weakestScore = Infinity;
+  let criticalCount = 0;
+  for (const district of districts) {
+    let districtScore = 0;
+    for (const indicator of indicators) {
+      const value = Math.min(100, Math.max(0, values[district.id][indicator.id]));
+      districtScore += value * weights[indicator.id];
+      if (value < 40) criticalCount += 1;
+    }
+    weightedAverage += districtScore * district.populationShare;
+    weakestScore = Math.min(weakestScore, districtScore);
+  }
+  return 0.7 * weightedAverage + 0.3 * weakestScore - criticalCount;
 }
 
 const BASE_STATE = calculateState([]);
@@ -133,6 +158,117 @@ function candidateDecisions() {
   return measures.flatMap((measure) => measure.scope === 'city'
     ? [{ measureId: measure.id, districtId: null }]
     : districts.map((district) => ({ measureId: measure.id, districtId: district.id })));
+}
+
+function compareDecisionLists(left, right) {
+  for (let index = 0; index < left.length; index += 1) {
+    const difference = compareDecisions(left[index], right[index]);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
+function isBetterGlobalCandidate(candidate, best) {
+  if (!best || candidate.score > best.score) return true;
+  if (candidate.score < best.score) return false;
+  if (candidate.validation.cost < best.validation.cost) return true;
+  if (candidate.validation.cost > best.validation.cost) return false;
+  return compareDecisionLists(candidate.decisions, best.decisions) < 0;
+}
+
+function forEachGlobalScenario(visitor) {
+  function assignTargets(selectedMeasures, index, decisions) {
+    if (index === selectedMeasures.length) {
+      visitor(decisions);
+      return;
+    }
+    const measure = selectedMeasures[index];
+    const targets = measure.scope === 'city' ? [null] : districts.map((district) => district.id);
+    for (const districtId of targets) {
+      assignTargets(selectedMeasures, index + 1, [...decisions, { measureId: measure.id, districtId }]);
+    }
+  }
+
+  function chooseMeasures(start, selectedMeasures) {
+    if (selectedMeasures.length === 5) {
+      assignTargets(selectedMeasures, 0, []);
+      return;
+    }
+    const remaining = 5 - selectedMeasures.length;
+    for (let index = start; index <= measures.length - remaining; index += 1) {
+      chooseMeasures(index + 1, [...selectedMeasures, measures[index]]);
+    }
+  }
+
+  chooseMeasures(0, []);
+}
+
+let cachedGlobalOptimum = null;
+
+function findGlobalOptimum() {
+  if (cachedGlobalOptimum) return JSON.parse(JSON.stringify(cachedGlobalOptimum));
+
+  let best = null;
+  let tieCount = 0;
+  let validScenarioCount = 0;
+  forEachGlobalScenario((decisions) => {
+    const validation = validateScenario(decisions);
+    if (!validation.valid) return;
+    validScenarioCount += 1;
+    const candidate = {
+      decisions: canonicalDecisions(decisions),
+      validation,
+      score: calculateScore(decisions),
+    };
+    if (!best || candidate.score > best.score) {
+      best = candidate;
+      tieCount = 1;
+      return;
+    }
+    if (candidate.score === best.score) {
+      tieCount += 1;
+      if (isBetterGlobalCandidate(candidate, best)) best = candidate;
+    }
+  });
+
+  cachedGlobalOptimum = {
+    decisions: best.decisions,
+    cost: best.validation.cost,
+    score: best.score,
+    scoreDisplay: best.score.toFixed(5),
+    tieCount,
+    validScenarioCount,
+  };
+  return JSON.parse(JSON.stringify(cachedGlobalOptimum));
+}
+
+function compareWithGlobalOptimum(acceptedCalculation) {
+  if (!acceptedCalculation?.accepted) throw new TypeError('An accepted scenario is required for global comparison');
+  const global = findGlobalOptimum();
+  const participant = {
+    decisions: canonicalDecisions(acceptedCalculation.decisions),
+    cost: acceptedCalculation.result.cost,
+    score: acceptedCalculation.result.score,
+    scoreDisplay: acceptedCalculation.result.score.toFixed(5),
+  };
+  const decisionDetails = global.decisions.map((decision) => {
+    const measure = measureById.get(decision.measureId);
+    return {
+      ...decision,
+      direction: measure.direction,
+      cost: measure.cost,
+      scope: measure.scope,
+      delay: measure.delay,
+    };
+  });
+  return {
+    kind: 'global_optimum',
+    catalogVersion: CATALOG_VERSION,
+    modelVersion: MODEL_VERSION,
+    participant,
+    global: { ...global, decisionDetails },
+    delta: global.score - participant.score,
+  };
 }
 
 function impactList(baseState, candidateState) {
@@ -381,4 +517,15 @@ function calculateScenario(decisions) {
   };
 }
 
-module.exports = { BUDGET, HORIZON_QUARTERS, validateScenario, calculateScenario, findRecommendation };
+module.exports = {
+  BUDGET,
+  HORIZON_QUARTERS,
+  CATALOG_VERSION,
+  MODEL_VERSION,
+  validateScenario,
+  calculateScenario,
+  findRecommendation,
+  findGlobalOptimum,
+  compareWithGlobalOptimum,
+  isBetterGlobalCandidate,
+};

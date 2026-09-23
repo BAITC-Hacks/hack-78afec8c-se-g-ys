@@ -106,6 +106,15 @@
         storage.setItem(STORAGE_KEY, JSON.stringify(attempts));
         return immutableCopy(attempts[index]);
       },
+      saveGlobalComparison(attemptId, comparison) {
+        if (comparison?.kind !== 'global_optimum') throw new TypeError('A global comparison is required');
+        const attempts = read();
+        const index = attempts.findIndex((attempt) => attempt.id === attemptId);
+        if (index < 0) throw new Error('Accepted attempt not found');
+        attempts[index] = { ...attempts[index], globalComparison: comparison };
+        storage.setItem(STORAGE_KEY, JSON.stringify(attempts));
+        return immutableCopy(attempts[index]);
+      },
     };
   }
 

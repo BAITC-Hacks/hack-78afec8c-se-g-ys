@@ -21,6 +21,10 @@ const selectedAttemptIds = new Set();
 let draftAccepted = false;
 let acceptedDecisions = null;
 let analysisPending = false;
+let currentAttemptId = null;
+let currentGlobalComparison = null;
+let globalComparisonPending = false;
+let globalComparisonError = null;
 
 function filterMeasures() {
   const query = search.value.trim().toLowerCase();
@@ -54,6 +58,18 @@ function recommendationMarkup(recommendation) {
   if (!recommendation.found) return `<section class="recommendation"><h3>${text.recommendation}</h3><p>${text.noRecommendation}</p></section>`;
   const impacts = recommendation.impacts.map((impact) => `<li><strong>${impact.name}</strong><span>${text.gain}: ${impact.gains.map(impactLabel).join(' · ') || text.none}</span><span>${text.losses}: ${impact.losses.map(impactLabel).join(' · ') || text.none}</span></li>`).join('');
   return `<section class="recommendation"><h3>${text.recommendation}</h3><p><b>${decisionLabel(recommendation.changedDecision.from)}</b> ${text.replace} <b>${decisionLabel(recommendation.changedDecision.to)}</b>. ${text.scoreIncrease}: <b>+${recommendation.scoreDelta.toFixed(5)}</b>; ${text.scenarioCost}: <b>${recommendation.cost}</b> (${recommendation.costDelta >= 0 ? '+' : ''}${recommendation.costDelta}).</p><ul class="recommendation-impacts">${impacts}</ul></section>`;
+}
+
+function globalComparisonMarkup() {
+  if (!currentAttemptId && !currentGlobalComparison) return '';
+  const button = `<button type="button" data-reveal-global-comparison ${globalComparisonPending || !currentAttemptId ? 'disabled' : ''}>${globalComparisonPending ? text.calculatingGlobalComparison : text.revealGlobalComparison}</button>`;
+  if (!currentGlobalComparison) return `<section class="global-comparison"><h3>${text.globalComparison}</h3><p>${text.globalNotice}</p>${globalComparisonError ? `<p role="alert">${escapeHtml(globalComparisonError)}</p>` : ''}${button}</section>`;
+  const comparison = currentGlobalComparison;
+  const decisions = comparison.global.decisions.map((decision) => {
+    const measure = measureOf(decision.measureId);
+    return `${escapeHtml(decisionLabel(decision))} · ${escapeHtml(measure.direction)} · ${measure.cost} ${text.unit}`;
+  }).join(', ');
+  return `<section class="global-comparison"><h3>${text.globalComparison}</h3><div class="result-summary"><span>${text.globalMaximum} <b>${comparison.global.scoreDisplay}</b></span><span>${text.differenceToMaximum} <b>+${comparison.delta.toFixed(5)}</b></span><span>${text.scenarioCost} <b>${comparison.global.cost}</b></span></div><p><b>${text.globalMaximum}:</b> ${decisions}</p><p>${text.globalNotice} ${comparison.global.tieCount > 1 ? `${text.globalTie}: ${comparison.global.tieCount}.` : ''}</p>${button}</section>`;
 }
 
 function factValue(fact) {
@@ -99,13 +115,14 @@ function resultMarkup(result) {
   const critical = result.criticalIndicators.length ? result.criticalIndicators.map((item) => `${item.districtName}: ${item.indicatorId} = ${item.value.toFixed(2)}`).join(' · ') : text.none;
   const aiAnalysis = result.aiAnalysis && result.facts ? analysisMarkup(result.aiAnalysis, result.facts) : '';
   const basicAnalysis = result.basicAnalysis && result.facts ? analysisMarkup(result.basicAnalysis, result.facts, { retry: true }) : '';
-  return `<h3>${text.result}</h3><div class="result-summary"><span>${text.spent} <b>${result.cost}</b></span><span>${text.score} <b>${result.score.toFixed(5)}</b></span><span>${text.increase} <b>${result.scoreDelta.toFixed(5)}</b></span><span>${text.weighted} <b>${result.weightedAverage.toFixed(3)}</b></span></div><p>${text.weakest}: <b>${result.weakestDistrict.name}</b> (${result.weakestDistrict.score.toFixed(3)}). ${text.criticalCount}: <b>${result.criticalCount}</b> — ${critical}.</p><p>${text.synergies}:</p><ul>${result.synergies.length ? result.synergies.map((item) => `<li>${item.title}: ${item.indicatorId} +${item.bonus}</li>`).join('') : `<li>${text.none}</li>`}</ul><div class="result-districts">${result.districts.map((district) => `<div class="result-district"><strong>${district.name}<small>${text.scoreLabel} ${district.score.toFixed(3)}</small></strong><span>${text.q8Indicators}<small>${Object.entries(district.indicators).map(([id, value]) => `${id}: ${value.toFixed(2)}`).join(' · ')}</small></span><span>${text.changes}<small>${Object.entries(district.changes).filter(([, value]) => value !== 0).map(([id, value]) => `${id}: ${value > 0 ? '+' : ''}${value.toFixed(2)}`).join(' · ') || text.noChanges}</small></span></div>`).join('')}</div>${aiAnalysis}${basicAnalysis}${recommendationMarkup(result.recommendation)}`;
+  return `<h3>${text.result}</h3><div class="result-summary"><span>${text.spent} <b>${result.cost}</b></span><span>${text.score} <b>${result.score.toFixed(5)}</b></span><span>${text.increase} <b>${result.scoreDelta.toFixed(5)}</b></span><span>${text.weighted} <b>${result.weightedAverage.toFixed(3)}</b></span></div><p>${text.weakest}: <b>${result.weakestDistrict.name}</b> (${result.weakestDistrict.score.toFixed(3)}). ${text.criticalCount}: <b>${result.criticalCount}</b> — ${critical}.</p><p>${text.synergies}:</p><ul>${result.synergies.length ? result.synergies.map((item) => `<li>${item.title}: ${item.indicatorId} +${item.bonus}</li>`).join('') : `<li>${text.none}</li>`}</ul><div class="result-districts">${result.districts.map((district) => `<div class="result-district"><strong>${district.name}<small>${text.scoreLabel} ${district.score.toFixed(3)}</small></strong><span>${text.q8Indicators}<small>${Object.entries(district.indicators).map(([id, value]) => `${id}: ${value.toFixed(2)}`).join(' · ')}</small></span><span>${text.changes}<small>${Object.entries(district.changes).filter(([, value]) => value !== 0).map(([id, value]) => `${id}: ${value > 0 ? '+' : ''}${value.toFixed(2)}`).join(' · ') || text.noChanges}</small></span></div>`).join('')}</div>${aiAnalysis}${basicAnalysis}${recommendationMarkup(result.recommendation)}${globalComparisonMarkup()}`;
 }
 
 function showResult(result) {
   resultPanel.hidden = false;
   resultPanel.innerHTML = resultMarkup(result);
   document.querySelector('#retry-ai-analysis')?.addEventListener('click', () => requestAiAnalysis(acceptedDecisions, result));
+  document.querySelector('[data-reveal-global-comparison]')?.addEventListener('click', () => { void requestGlobalComparison(result); });
 }
 
 function renderAcceptedResult(result) {
@@ -130,6 +147,30 @@ async function requestAiAnalysis(decisions, result) {
     analysisPending = false;
     saveAcceptedResult(decisions, result);
     renderAcceptedResult(result);
+  }
+}
+
+async function requestGlobalComparison(result) {
+  if (globalComparisonPending || !currentAttemptId) return;
+  globalComparisonPending = true;
+  globalComparisonError = null;
+  showResult(result);
+  try {
+    const response = await fetch(`/api/attempts/${encodeURIComponent(currentAttemptId)}/what-if`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ locale }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || text.globalFailed);
+    currentGlobalComparison = payload.comparison;
+    attemptHistory.saveGlobalComparison(currentAttemptId, currentGlobalComparison);
+    renderAttemptHistory();
+  } catch {
+    globalComparisonError = text.globalFailed;
+  } finally {
+    globalComparisonPending = false;
+    showResult(result);
   }
 }
 
@@ -212,6 +253,9 @@ async function acceptScenario(restoring = false) {
   const response = await fetch('/api/scenarios/accept', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decisions: draft, locale }) });
   const payload = await response.json();
   if (!response.ok) { draftMessage.textContent = payload.errors.map((item) => item.message).join(' '); renderDraft(); return; }
+  currentAttemptId = payload.attemptId;
+  currentGlobalComparison = null;
+  globalComparisonError = null;
   saveAcceptedResult(payload.decisions, payload.result);
   renderAcceptedResult(payload.result);
   requestAiAnalysis(payload.decisions, payload.result);
@@ -353,7 +397,7 @@ search.addEventListener('input', filterMeasures);
 scope.addEventListener('change', filterMeasures);
 document.querySelectorAll('[data-add-measure]').forEach((button) => button.addEventListener('click', () => addMeasure(button)));
 draftList.addEventListener('click', (event) => { const button = event.target.closest('[data-remove]'); if (button && !draftAccepted) { draft.splice(Number(button.dataset.remove), 1); renderDraft(); } });
-attemptList.addEventListener('click', (event) => { const open = event.target.closest('[data-open-attempt]'); const copy = event.target.closest('[data-copy-attempt]'); if (!open && !copy) return; const attempt = attemptHistory.list()[Number((open ?? copy).dataset.openAttempt ?? (open ?? copy).dataset.copyAttempt)]; if (!attempt) return; if (open) { acceptedDecisions = attempt.decisions; showResult(attempt.result); } if (copy) copyAttempt(attempt); });
+attemptList.addEventListener('click', (event) => { const open = event.target.closest('[data-open-attempt]'); const copy = event.target.closest('[data-copy-attempt]'); if (!open && !copy) return; const attempt = attemptHistory.list()[Number((open ?? copy).dataset.openAttempt ?? (open ?? copy).dataset.copyAttempt)]; if (!attempt) return; if (open) { acceptedDecisions = attempt.decisions; currentAttemptId = attempt.id; currentGlobalComparison = attempt.globalComparison || null; globalComparisonError = null; showResult(attempt.result); } if (copy) copyAttempt(attempt); });
 attemptList.addEventListener('change', (event) => { const checkbox = event.target.closest('[data-compare-attempt]'); if (!checkbox) return; const attempt = attemptHistory.list()[Number(checkbox.dataset.compareAttempt)]; if (!attempt) return; if (checkbox.checked) { if (selectedAttemptIds.size === 2) selectedAttemptIds.delete([...selectedAttemptIds][0]); selectedAttemptIds.add(attempt.id); } else selectedAttemptIds.delete(attempt.id); renderAttemptHistory(); });
 accept.addEventListener('click', () => { void acceptScenario(); });
 document.querySelector('#language-switch').addEventListener('click', (event) => { event.preventDefault(); sessionStorage.setItem(stateKey, JSON.stringify({ decisions: draft, accepted: draftAccepted })); window.location.assign(event.currentTarget.href); });
