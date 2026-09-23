@@ -25,15 +25,18 @@ function districtMarkup(district, indicators) {
   </article>`;
 }
 
-function measureMarkup(measure) {
+function measureMarkup(measure, districts) {
   const cityWide = measure.scope === 'city';
   const scopeLabel = cityWide ? 'Весь город' : 'Один район';
-  return `<article class="measure-card" data-measure data-scope="${measure.scope}">
+  const target = cityWide
+    ? '<span class="target-note">Применяется ко всем районам</span>'
+    : `<label class="target-select">Район<select data-district-for="${measure.id}"><option value="">Выберите район</option>${districts.map((district) => `<option value="${district.id}">${escapeHtml(district.name)}</option>`).join('')}</select></label>`;
+  return `<article class="measure-card" data-measure data-measure-id="${measure.id}" data-cost="${measure.cost}" data-direction="${escapeHtml(measure.direction)}" data-scope="${measure.scope}">
     <div class="measure-top"><span class="measure-id">${measure.id}</span><span class="scope ${cityWide ? 'city' : 'district'}">${scopeLabel}</span></div>
     <h3>${escapeHtml(measure.name)}</h3>
     <p class="direction"><span>Направление</span>${escapeHtml(measure.direction)}</p>
     <dl class="measure-facts"><div><dt>Стоимость</dt><dd>${measure.cost} <small>ед.</small></dd></div><div><dt>Охват</dt><dd>${scopeLabel}</dd></div><div><dt>Лаг</dt><dd>${measure.delay} <small>кв.</small></dd></div></dl>
-    <div class="effects-block"><span>Заявленные эффекты</span><div>${effectMarkup(measure.effects)}</div></div>
+    <div class="effects-block"><span>Заявленные эффекты</span><div>${effectMarkup(measure.effects)}</div></div><div class="measure-action">${target}<button type="button" data-add-measure="${measure.id}">Добавить</button></div>
   </article>`;
 }
 
@@ -48,9 +51,9 @@ function renderPage({ indicators, districts, measures, budget, horizonQuarters }
 </style></head><body><main class="shell">
 <header><div><div class="brand"><span class="brand-mark">Q</span><div><p class="brand-name">QALA</p><p class="brand-sub">Симулятор городских решений</p></div></div><p class="eyebrow" style="margin-top:38px">Шаг 01 · Изучите исходные данные</p><h1>Сначала поймите город.<br>Потом меняйте его.</h1><p class="lead">Одинаковая стартовая точка для каждого участника: пять районов, исходные показатели и каталог мероприятий.</p></div><span class="context">Горизонт: ${horizonQuarters} кварталов · Бюджет: ${budget}</span></header>
 <section class="section" aria-labelledby="city-title"><div class="section-head"><div><p class="eyebrow">Базовая линия</p><h2 id="city-title">Исходное состояние города</h2></div><p class="note">Шкала 0–100 · чем выше значение, тем лучше</p></div><div class="city-layout"><div class="districts">${districts.map((district) => districtMarkup(district, indicators)).join('')}</div><aside class="legend"><h3>Определения показателей</h3><ul>${indicatorMarkup(indicators)}</ul><div class="status-key" aria-label="Статусы исходных значений"><span class="key-critical">Критическое: &lt; 40</span><span class="key-weak">Слабое: 40–54</span><span class="key-stable">Стабильное: 55+</span></div></aside></div></section>
-<section class="section" aria-labelledby="catalog-title"><div class="section-head"><div><p class="eyebrow">14 вариантов изменений</p><h2 id="catalog-title">Каталог мероприятий</h2><p class="note">Каждая карточка показывает территориальный эффект, стоимость, лаг и заявленные эффекты.</p></div><div class="toolbar"><label class="visually-hidden" for="search">Поиск</label><input class="search" id="search" type="search" placeholder="Найти мероприятие…"><label class="visually-hidden" for="scope">Охват</label><select class="filter" id="scope"><option value="all">Все охваты</option><option value="district">Один район</option><option value="city">Весь город</option></select></div></div><div class="measures" id="measures">${measures.map(measureMarkup).join('')}<div class="empty" id="empty" hidden>Ничего не найдено.</div></div></section>
-<footer>Исходные значения и каталог одинаковы для всех попыток. На этом шаге доступны только исходные данные для изучения.</footer></main>
-<script>const search=document.querySelector('#search'),scope=document.querySelector('#scope'),cards=[...document.querySelectorAll('[data-measure]')],empty=document.querySelector('#empty');function filter(){const q=search.value.trim().toLowerCase(),s=scope.value;let count=0;cards.forEach((card)=>{const shown=card.textContent.toLowerCase().includes(q)&&(s==='all'||card.dataset.scope===s);card.hidden=!shown;if(shown)count++});empty.hidden=count!==0}search.addEventListener('input',filter);scope.addEventListener('change',filter);</script></body></html>`;
+<section class="section" aria-labelledby="draft-title"><div class="section-head"><div><p class="eyebrow">Черновик сценария</p><h2 id="draft-title">Пять решений</h2><p class="note">Выберите мероприятия и район для районных решений. Принятие доступно только для допустимого набора из пяти.</p></div></div><div class="draft-panel"><div class="draft-summary"><span>Решения: <b id="draft-count">0/5</b></span><span>Расход: <b id="draft-cost">0</b></span><span>Остаток: <b id="draft-remaining">100</b></span></div><ul class="draft-list" id="draft-list"></ul><p class="draft-message" id="draft-message" aria-live="polite"></p><button class="accept-button" id="accept-scenario" type="button" disabled>Принять пять решений</button><div id="result-panel" hidden aria-live="polite"></div></div></section>
+<section class="section" aria-labelledby="catalog-title"><div class="section-head"><div><p class="eyebrow">14 вариантов изменений</p><h2 id="catalog-title">Каталог мероприятий</h2><p class="note">Каждая карточка показывает территориальный эффект, стоимость, лаг и заявленные эффекты.</p></div><div class="toolbar"><label class="visually-hidden" for="search">Поиск</label><input class="search" id="search" type="search" placeholder="Найти мероприятие…"><label class="visually-hidden" for="scope">Охват</label><select class="filter" id="scope"><option value="all">Все охваты</option><option value="district">Один район</option><option value="city">Весь город</option></select></div></div><div class="measures" id="measures">${measures.map((measure) => measureMarkup(measure, districts)).join('')}<div class="empty" id="empty" hidden>Ничего не найдено.</div></div></section><footer>Исходные значения и каталог одинаковы для всех попыток. На этом шаге доступны только исходные данные для изучения.</footer></main>
+<script src="/client.js"></script></body></html>`;
 }
 
 module.exports = { renderPage };
