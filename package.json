@@ -4,7 +4,7 @@
   "private": true,
   "description": "QALA: исходное состояние города и каталог мероприятий",
   "scripts": {
-    "start": "node server.js",
+    "start": "bash run.sh",
     "test": "node --test"
   }
 }
