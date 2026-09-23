@@ -1,0 +1,3 @@
+# Windows alternate-data-stream artifacts created when files are copied in via
+# Explorer / WSL drag-and-drop. Not real content.
+*:Zone.Identifier
