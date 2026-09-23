@@ -95,6 +95,15 @@ function savedAcceptedAttempt() {
   }
 }
 
+function calendarMarkup(calendar) {
+  if (!Array.isArray(calendar) || !calendar.length) return '';
+  const labels = window.qalaCalendarText || {
+    event: 'Event', target: 'Target', direction: 'Direction', cost: 'Cost', lag: 'Lag', scope: 'Scope',
+    q8: 'End of Q8 result',
+  };
+  return calendar.map((row) => `<article class="calendar-row" data-calendar-row="${escapeHtml(row.measureId)}"><header><h4>${escapeHtml(row.event)}</h4><dl><div><dt>${labels.target}</dt><dd>${escapeHtml(row.targetLabel)}</dd></div><div><dt>${labels.direction}</dt><dd>${escapeHtml(row.direction)}</dd></div><div><dt>${labels.cost}</dt><dd>${row.cost}</dd></div><div><dt>${labels.lag}</dt><dd>${row.lag}</dd></div><div><dt>${labels.scope}</dt><dd>${escapeHtml(row.scopeLabel)}</dd></div></dl></header><ol>${row.quarters.map((quarter) => `<li class="calendar-quarter ${escapeHtml(quarter.marker)}"><span>Q${quarter.quarter}</span><small>${escapeHtml(quarter.label)}</small></li>`).join('')}</ol><p class="calendar-q8">${escapeHtml(labels.q8)}</p></article>`).join('');
+}
+
 function resultMarkup(result) {
   const critical = result.criticalIndicators.length ? result.criticalIndicators.map((item) => `${item.districtName}: ${item.indicatorId} = ${item.value.toFixed(2)}`).join(' · ') : text.none;
   const aiAnalysis = result.aiAnalysis && result.facts ? analysisMarkup(result.aiAnalysis, result.facts) : '';
@@ -105,6 +114,11 @@ function resultMarkup(result) {
 function showResult(result) {
   resultPanel.hidden = false;
   resultPanel.innerHTML = resultMarkup(result);
+  const calendarPanel = document.querySelector('#lag-calendar');
+  if (calendarPanel) {
+    calendarPanel.innerHTML = calendarMarkup(result.lagCalendar);
+    calendarPanel.hidden = !Array.isArray(result.lagCalendar) || result.lagCalendar.length === 0;
+  }
   document.querySelector('#retry-ai-analysis')?.addEventListener('click', () => requestAiAnalysis(acceptedDecisions, result));
 }
 
@@ -156,6 +170,8 @@ function copyAttempt(attempt) {
   draftAccepted = false;
   resultPanel.hidden = true;
   resultPanel.innerHTML = '';
+  const calendarPanel = document.querySelector('#lag-calendar');
+  if (calendarPanel) { calendarPanel.hidden = true; calendarPanel.innerHTML = ''; }
   renderDraft();
   draftMessage.textContent = 'Создана редактируемая копия принятого сценария. Бюджет снова равен 100; исходная попытка не изменена.';
 }

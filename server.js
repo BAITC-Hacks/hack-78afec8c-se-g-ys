@@ -5,6 +5,7 @@ const crypto = require('node:crypto');
 const { catalogPayload, localizedDistrictName, normalizeLocale } = require('./src/data');
 const { renderPage } = require('./src/view');
 const { calculateScenario } = require('./src/simulation');
+const { buildLagCalendar } = require('./src/lag-calendar');
 const { analyzeScenario } = require('./src/ai-analysis');
 const { createOpenAiAnalysisProvider } = require('./src/openai-analysis-provider');
 const { createAiAnalysisService } = require('./src/ai-analysis');
@@ -144,10 +145,18 @@ function createServer({ analysisProvider = createOpenAiAnalysisProvider(), aiPro
         }
         attempts.set(attemptId, { decisions: savedDecisions, calculation });
         const localized = localizeCalculation(calculation, locale);
-        return sendJson(response, 200, {
+        const calendarDecisions = [...calculation.decisions].sort((left, right) => left.measureId.localeCompare(right.measureId, 'en', { numeric: true }));
+        const localizedWithCalendar = {
           ...localized,
+          result: {
+            ...localized.result,
+            lagCalendar: buildLagCalendar(calendarDecisions, locale),
+          },
+        };
+        return sendJson(response, 200, {
+          ...localizedWithCalendar,
           attemptId,
-          analysis: { status: 'loading', locale, analysis: localized.result.basicAnalysis },
+          analysis: { status: 'loading', locale, analysis: localizedWithCalendar.result.basicAnalysis },
         });
       } catch {
         return sendJson(response, 400, { accepted: false, errors: [{ code: 'invalid_json', message: 'Request body must be valid JSON' }] });

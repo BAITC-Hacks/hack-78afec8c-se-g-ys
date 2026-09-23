@@ -64,4 +64,19 @@ function renderPage({ indicators, districts, measures, budget, horizonQuarters, 
 */
 }
 
-module.exports = { renderPage };
+function renderPageWithCalendar(data) {
+  const labels = data.locale === 'kk'
+    ? {
+      title: 'Q1–Q8 әсер күнтізбесі', notice: 'Әр қабылданған шешім үшін әсердің басталуы және Q8 соңындағы нәтиже көрсетіледі.',
+      event: 'Оқиға', target: 'Нысан', direction: 'Бағыт', cost: 'Құны', lag: 'Кідіріс', scope: 'Қамту', q8: 'Q8 соңындағы нәтиже',
+    }
+    : {
+      title: 'Календарь лагов Q1–Q8', notice: 'Для каждого принятого решения показаны начало действия и результат на конец Q8.',
+      event: 'Событие', target: 'Объект', direction: 'Направление', cost: 'Стоимость', lag: 'Лаг', scope: 'Охват', q8: 'Результат на конец Q8',
+    };
+  const calendarStyle = '<style>.lag-calendar-shell{padding:20px;border:1px solid var(--line);border-radius:19px;background:var(--paper)}.calendar-row{margin-top:14px;padding:16px;border:1px solid var(--line);border-radius:14px;background:#fbfdfb}.calendar-row header{display:block;padding:0}.calendar-row h4{margin:0 0 10px}.calendar-row dl{display:flex;flex-wrap:wrap;gap:12px;margin:0}.calendar-row dl div{min-width:105px}.calendar-row dt{color:var(--muted);font-size:10px}.calendar-row dd{margin:2px 0 0;font-weight:800}.calendar-row ol{display:grid;grid-template-columns:repeat(8,minmax(55px,1fr));gap:5px;padding:0;margin:16px 0 8px;list-style:none}.calendar-quarter{min-height:52px;padding:6px;border:1px solid var(--line);border-radius:8px;background:#f1f5f2;text-align:center}.calendar-quarter span,.calendar-quarter small{display:block}.calendar-quarter span{font-weight:800}.calendar-quarter small{color:var(--muted);font-size:10px}.calendar-quarter.onset{border-color:var(--orange);background:#fff2e8}.calendar-quarter.q8-result{border-color:var(--green);background:var(--mint)}.calendar-q8{margin:0;color:var(--green);font-size:12px;font-weight:800}@media(max-width:650px){.calendar-row ol{grid-template-columns:repeat(4,minmax(55px,1fr))}}</style>';
+  const calendarShell = `${calendarStyle}<section class="section lag-calendar-shell" id="lag-calendar" hidden aria-live="polite"><div class="section-head"><div><p class="eyebrow">${labels.title}</p><h2>${labels.title}</h2><p class="note">${labels.notice}</p></div><span class="context">Q1 · Q2 · Q3 · Q4 · Q5 · Q6 · Q7 · Q8</span></div></section><script>window.qalaCalendarText=${JSON.stringify(labels)};</script>`;
+  return renderPage(data).replace('<section class="section" aria-labelledby="attempt-history-title">', `${calendarShell}<section class="section" aria-labelledby="attempt-history-title">`);
+}
+
+module.exports = { renderPage: renderPageWithCalendar };
