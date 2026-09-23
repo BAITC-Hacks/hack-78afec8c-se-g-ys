@@ -16,11 +16,21 @@ const acceptedResultStorageKey = 'qala.accepted-result.v1';
 const attemptList = document.querySelector('#attempt-list');
 const attemptHistoryEmpty = document.querySelector('#attempt-history-empty');
 const attemptComparison = document.querySelector('#attempt-comparison');
+const mapPanel = document.querySelector('#scenario-map');
 const attemptHistory = window.QalaHistory.createAttemptHistory(window.localStorage);
 const selectedAttemptIds = new Set();
 let draftAccepted = false;
 let acceptedDecisions = null;
 let analysisPending = false;
+let selectedDistrictId = null;
+let currentAttempt = null;
+let currentGlobalComparison = null;
+let globalComparisonPending = false;
+let globalComparisonFailed = false;
+
+function usableGlobalComparison(comparison) {
+  return comparison?.modelVersion && comparison.modelVersion === window.qalaModelVersion ? comparison : null;
+}
 
 function filterMeasures() {
   const query = search.value.trim().toLowerCase();
@@ -36,7 +46,7 @@ function filterMeasures() {
 
 function measureOf(id) {
   const card = cards.find((item) => item.dataset.measureId === id);
-  return { id, cost: Number(card.dataset.cost), direction: card.dataset.direction, scope: card.dataset.scope };
+  return { id, name: card.dataset.name || id, cost: Number(card.dataset.cost), delay: Number(card.dataset.delay || 0), direction: card.dataset.direction, scope: card.dataset.scope };
 }
 
 function districtNameFor(decision) {
@@ -49,6 +59,62 @@ function districtNameFor(decision) {
 function decisionLabel(decision) { return `${decision.measureId} · ${districtNameFor(decision) || text.wholeCity}`; }
 function impactLabel(change) { return `${change.indicatorId}: ${change.delta > 0 ? '+' : ''}${change.delta.toFixed(2)}`; }
 function escapeHtml(value) { return String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#039;'); }
+
+function districtCatalog() { return window.qalaCatalog?.districts || []; }
+
+function districtFor(id) { return districtCatalog().find((district) => district.id === id); }
+
+function mapDecisionLabel(decision) {
+  const measure = measureOf(decision.measureId);
+  return `${measure.id} · ${measure.name} · ${decision.districtId ? districtNameFor(decision) : text.wholeCity}`;
+}
+
+function mapShape(id, index) {
+  const positions = [[12, 16], [124, 16], [236, 16], [68, 128], [180, 128]];
+  const [x, y] = positions[index];
+  const district = districtFor(id);
+  return `<g class="map-district" role="button" tabindex="0" data-map-district="${id}" aria-pressed="${selectedDistrictId === id}" aria-label="${escapeHtml(district?.name || id)}"><rect x="${x}" y="${y}" width="100" height="92" rx="14"></rect><text class="map-label" x="${x + 50}" y="${y + 48}" text-anchor="middle">${escapeHtml(district?.name || id)}</text></g>`;
+}
+
+function renderScenarioMap(result = null) {
+  if (!mapPanel) return;
+  const focusedDistrictId = document.activeElement?.dataset?.mapDistrict;
+  const decisions = acceptedDecisions || draft;
+  const selected = selectedDistrictId ? districtFor(selectedDistrictId) : null;
+  const selectedResult = result?.districts?.find((district) => district.id === selectedDistrictId);
+  const districtDecisions = selected ? decisions.filter((decision) => decision.districtId === selected.id) : [];
+  const cityDecisions = decisions.filter((decision) => !decision.districtId);
+  const indicatorText = selected
+    ? `<p><b>${text.initialIndicators}:</b> ${Object.entries(selected.indicators).map(([id, value]) => `${id}: ${value}`).join(' · ')}</p>${selectedResult ? `<p><b>${text.q8Indicators}:</b> ${Object.entries(selectedResult.indicators).map(([id, value]) => `${id}: ${value.toFixed(2)}`).join(' · ')}</p>` : ''}`
+    : `<p>${result ? text.mapLegend : text.draftMapNotice}</p>`;
+  mapPanel.innerHTML = `<div class="scenario-map"><div class="map-controls"><button type="button" data-map-reset ${selected ? '' : 'disabled'}>${text.resetMap}</button><span>${text.wholeCityView}: ${cityDecisions.length ? cityDecisions.map(mapDecisionLabel).map(escapeHtml).join('; ') : text.none}</span></div><div class="map-layout"><svg class="district-map" viewBox="0 0 350 238" role="group" aria-label="${escapeHtml(text.mapTitle)}">${districtCatalog().map((district, index) => mapShape(district.id, index)).join('')}</svg><div class="map-panel"><h3>${escapeHtml(selected?.name || text.wholeCityView)}</h3>${indicatorText}${selected ? `<p><b>${text.targetedDecisions}:</b> ${districtDecisions.length ? districtDecisions.map(mapDecisionLabel).map(escapeHtml).join('; ') : text.none}</p>` : ''}<p><b>${text.cityDecisions}:</b> ${cityDecisions.length ? cityDecisions.map(mapDecisionLabel).map(escapeHtml).join('; ') : text.none}</p><p>${text.mapLegend}</p></div></div></div>`;
+  if (focusedDistrictId) mapPanel.querySelector?.(`[data-map-district="${focusedDistrictId}"]`)?.focus();
+}
+
+function lagCalendarMarkup() {
+  if (!acceptedDecisions?.length) return '';
+  const rows = acceptedDecisions.map((decision) => {
+    const measure = measureOf(decision.measureId);
+    const onset = measure.delay + 1;
+    const cells = Array.from({ length: 8 }, (_, index) => {
+      const quarter = index + 1;
+      const kind = quarter < onset ? 'lag-waiting' : quarter === onset ? 'lag-onset' : 'lag-active';
+      const label = quarter < onset ? text.waiting : quarter === onset ? `${text.lagOnset} (${text.lag} ${measure.delay})` : text.active;
+      return `<td class="${kind}" aria-label="Q${quarter}: ${escapeHtml(label)}">${quarter === onset ? '●' : quarter < onset ? '—' : '✓'}</td>`;
+    }).join('');
+    return `<tr><th scope="row">${escapeHtml(mapDecisionLabel(decision))}<small> · ${escapeHtml(measure.direction)} · ${measure.cost} ${text.unit} · ${text.lag} ${measure.delay}</small></th>${cells}</tr>`;
+  }).join('');
+  return `<section class="lag-calendar"><h3>${text.lagCalendar}</h3><p>${text.lagCalendarHelp}</p><table><thead><tr><th>${text.decisions}</th>${Array.from({ length: 8 }, (_, index) => `<th scope="col">Q${index + 1}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></section>`;
+}
+
+function globalComparisonMarkup(comparison) {
+  if (!currentAttempt) return '';
+  if (!comparison) return `<section class="global-comparison"><h3>${text.globalComparison}</h3>${globalComparisonFailed ? `<p>${text.globalUnavailable}</p>` : ''}<p>${text.globalNotice}</p><button type="button" data-request-global ${globalComparisonPending ? 'disabled' : ''}>${globalComparisonPending ? text.globalLoading : globalComparisonFailed ? text.globalRetry : text.globalComparison}</button></section>`;
+  const details = comparison.decisionDetails.map((decision) => `<li><b>${escapeHtml(decision.measureId)} · ${escapeHtml(decision.name)}</b> — ${escapeHtml(decision.districtName || text.wholeCity)} · ${escapeHtml(decision.direction)} · ${decision.cost} ${text.unit}</li>`).join('');
+  const zero = comparison.delta === 0 ? `<p>${text.globalZero}</p>` : '';
+  const tie = comparison.tieCount > 1 ? `<p>${text.globalTie}</p>` : '';
+  return `<section class="global-comparison"><h3>${text.globalTitle}</h3><div class="result-summary"><span>${text.score}: <b>${comparison.displayScore.toFixed(5)}</b></span><span>${text.globalDelta}: <b>${comparison.delta >= 0 ? '+' : ''}${comparison.displayDelta.toFixed(5)}</b></span><span>${text.scenarioCost}: <b>${comparison.cost}</b></span></div>${zero}${tie}<p class="notice">${text.globalNotice}</p><h4>${text.globalDetails}</h4><ol>${details}</ol><button type="button" data-copy-global>${text.copyGlobal}</button></section>`;
+}
 
 function recommendationMarkup(recommendation) {
   if (!recommendation.found) return `<section class="recommendation"><h3>${text.recommendation}</h3><p>${text.noRecommendation}</p></section>`;
@@ -99,7 +165,7 @@ function resultMarkup(result) {
   const critical = result.criticalIndicators.length ? result.criticalIndicators.map((item) => `${item.districtName}: ${item.indicatorId} = ${item.value.toFixed(2)}`).join(' · ') : text.none;
   const aiAnalysis = result.aiAnalysis && result.facts ? analysisMarkup(result.aiAnalysis, result.facts) : '';
   const basicAnalysis = result.basicAnalysis && result.facts ? analysisMarkup(result.basicAnalysis, result.facts, { retry: true }) : '';
-  return `<h3>${text.result}</h3><div class="result-summary"><span>${text.spent} <b>${result.cost}</b></span><span>${text.score} <b>${result.score.toFixed(5)}</b></span><span>${text.increase} <b>${result.scoreDelta.toFixed(5)}</b></span><span>${text.weighted} <b>${result.weightedAverage.toFixed(3)}</b></span></div><p>${text.weakest}: <b>${result.weakestDistrict.name}</b> (${result.weakestDistrict.score.toFixed(3)}). ${text.criticalCount}: <b>${result.criticalCount}</b> — ${critical}.</p><p>${text.synergies}:</p><ul>${result.synergies.length ? result.synergies.map((item) => `<li>${item.title}: ${item.indicatorId} +${item.bonus}</li>`).join('') : `<li>${text.none}</li>`}</ul><div class="result-districts">${result.districts.map((district) => `<div class="result-district"><strong>${district.name}<small>${text.scoreLabel} ${district.score.toFixed(3)}</small></strong><span>${text.q8Indicators}<small>${Object.entries(district.indicators).map(([id, value]) => `${id}: ${value.toFixed(2)}`).join(' · ')}</small></span><span>${text.changes}<small>${Object.entries(district.changes).filter(([, value]) => value !== 0).map(([id, value]) => `${id}: ${value > 0 ? '+' : ''}${value.toFixed(2)}`).join(' · ') || text.noChanges}</small></span></div>`).join('')}</div>${aiAnalysis}${basicAnalysis}${recommendationMarkup(result.recommendation)}`;
+  return `<h3>${text.result}</h3><div class="result-summary"><span>${text.spent} <b>${result.cost}</b></span><span>${text.score} <b>${result.score.toFixed(5)}</b></span><span>${text.increase} <b>${result.scoreDelta.toFixed(5)}</b></span><span>${text.weighted} <b>${result.weightedAverage.toFixed(3)}</b></span></div><p>${text.weakest}: <b>${result.weakestDistrict.name}</b> (${result.weakestDistrict.score.toFixed(3)}). ${text.criticalCount}: <b>${result.criticalCount}</b> — ${critical}.</p><p>${text.synergies}:</p><ul>${result.synergies.length ? result.synergies.map((item) => `<li>${item.title}: ${item.indicatorId} +${item.bonus}</li>`).join('') : `<li>${text.none}</li>`}</ul><div class="result-districts">${result.districts.map((district) => `<div class="result-district"><strong>${district.name}<small>${text.scoreLabel} ${district.score.toFixed(3)}</small></strong><span>${text.q8Indicators}<small>${Object.entries(district.indicators).map(([id, value]) => `${id}: ${value.toFixed(2)}`).join(' · ')}</small></span><span>${text.changes}<small>${Object.entries(district.changes).filter(([, value]) => value !== 0).map(([id, value]) => `${id}: ${value > 0 ? '+' : ''}${value.toFixed(2)}`).join(' · ') || text.noChanges}</small></span></div>`).join('')}</div>${lagCalendarMarkup()}${globalComparisonMarkup(currentGlobalComparison)}${aiAnalysis}${basicAnalysis}${recommendationMarkup(result.recommendation)}`;
 }
 
 function showResult(result) {
@@ -110,6 +176,7 @@ function showResult(result) {
 
 function renderAcceptedResult(result) {
   showResult(result);
+  renderScenarioMap(result);
   draftAccepted = true;
   renderDraft();
   draftMessage.textContent = text.accepted;
@@ -156,8 +223,36 @@ function copyAttempt(attempt) {
   draftAccepted = false;
   resultPanel.hidden = true;
   resultPanel.innerHTML = '';
+  currentAttempt = null;
+  currentGlobalComparison = null;
   renderDraft();
-  draftMessage.textContent = 'Создана редактируемая копия принятого сценария. Бюджет снова равен 100; исходная попытка не изменена.';
+  draftMessage.textContent = text.draftHelp;
+}
+
+async function requestGlobalComparison() {
+  if (!currentAttempt || globalComparisonPending) return;
+  globalComparisonPending = true;
+  globalComparisonFailed = false;
+  showResult(currentAttempt.result);
+  try {
+    const response = await fetch(`/api/attempts/${encodeURIComponent(currentAttempt.id)}/global-comparison?locale=${encodeURIComponent(locale)}`, { method: 'POST' });
+    const payload = await response.json();
+    if (!response.ok || !payload.comparison) throw new Error(payload.error || 'global_comparison_unavailable');
+    currentAttempt = attemptHistory.saveGlobalComparison(currentAttempt.id, payload.comparison);
+    currentGlobalComparison = currentAttempt.globalComparison;
+  } catch {
+    currentGlobalComparison = null;
+    globalComparisonFailed = true;
+    draftMessage.textContent = text.globalUnavailable;
+  } finally {
+    globalComparisonPending = false;
+    if (currentAttempt) showResult(currentAttempt.result);
+  }
+}
+
+function copyGlobalScenario() {
+  if (!currentGlobalComparison) return;
+  copyAttempt({ decisions: currentGlobalComparison.decisions });
 }
 
 function localErrors() {
@@ -185,6 +280,7 @@ function renderDraft() {
   draftMessage.textContent = errors.join(' ');
   accept.disabled = draftAccepted || errors.length > 0;
   document.querySelectorAll('[data-add-measure]').forEach((button) => { button.disabled = draftAccepted; });
+  if (!draftAccepted) renderScenarioMap();
 }
 
 function addMeasure(button) {
@@ -213,13 +309,25 @@ async function acceptScenario(restoring = false) {
   const payload = await response.json();
   if (!response.ok) { draftMessage.textContent = payload.errors.map((item) => item.message).join(' '); renderDraft(); return; }
   saveAcceptedResult(payload.decisions, payload.result);
+  if (!restoring) {
+    try {
+      currentAttempt = attemptHistory.append(payload);
+      currentGlobalComparison = usableGlobalComparison(currentAttempt.globalComparison);
+      globalComparisonFailed = false;
+      renderAttemptHistory();
+    } catch {
+      currentAttempt = null;
+    }
+  } else {
+    currentAttempt = [...attemptHistory.list()].reverse().find((attempt) => JSON.stringify(attempt.decisions) === JSON.stringify(payload.decisions)) || null;
+    currentGlobalComparison = usableGlobalComparison(currentAttempt?.globalComparison);
+    globalComparisonFailed = false;
+  }
   renderAcceptedResult(payload.result);
   requestAiAnalysis(payload.decisions, payload.result);
   if (!restoring) {
     try {
-      attemptHistory.append(payload);
-      renderAttemptHistory();
-      draftMessage.textContent = 'Попытка принята и сохранена в истории. Исходная запись больше не изменяется.';
+      draftMessage.textContent = text.accepted;
     } catch {
       draftMessage.textContent = text.accepted;
     }
@@ -337,6 +445,7 @@ function restoreAfterLocaleSwitch() {
   sessionStorage.removeItem(stateKey);
   try {
     const state = JSON.parse(saved);
+    selectedDistrictId = state.selectedDistrictId || null;
     draft.push(...state.decisions.map((item) => ({ measureId: item.measureId, districtId: item.districtId ?? null, districtName: districtNameFor(item) })));
     renderDraft();
     if (state.accepted) void acceptScenario(true);
@@ -353,16 +462,22 @@ search.addEventListener('input', filterMeasures);
 scope.addEventListener('change', filterMeasures);
 document.querySelectorAll('[data-add-measure]').forEach((button) => button.addEventListener('click', () => addMeasure(button)));
 draftList.addEventListener('click', (event) => { const button = event.target.closest('[data-remove]'); if (button && !draftAccepted) { draft.splice(Number(button.dataset.remove), 1); renderDraft(); } });
-attemptList.addEventListener('click', (event) => { const open = event.target.closest('[data-open-attempt]'); const copy = event.target.closest('[data-copy-attempt]'); if (!open && !copy) return; const attempt = attemptHistory.list()[Number((open ?? copy).dataset.openAttempt ?? (open ?? copy).dataset.copyAttempt)]; if (!attempt) return; if (open) { acceptedDecisions = attempt.decisions; showResult(attempt.result); } if (copy) copyAttempt(attempt); });
+attemptList.addEventListener('click', (event) => { const open = event.target.closest('[data-open-attempt]'); const copy = event.target.closest('[data-copy-attempt]'); if (!open && !copy) return; const attempt = attemptHistory.list()[Number((open ?? copy).dataset.openAttempt ?? (open ?? copy).dataset.copyAttempt)]; if (!attempt) return; if (open) { currentAttempt = attempt; currentGlobalComparison = usableGlobalComparison(attempt.globalComparison); globalComparisonFailed = false; acceptedDecisions = attempt.decisions; draftAccepted = true; showResult(attempt.result); renderScenarioMap(attempt.result); renderDraft(); } if (copy) copyAttempt(attempt); });
 attemptList.addEventListener('change', (event) => { const checkbox = event.target.closest('[data-compare-attempt]'); if (!checkbox) return; const attempt = attemptHistory.list()[Number(checkbox.dataset.compareAttempt)]; if (!attempt) return; if (checkbox.checked) { if (selectedAttemptIds.size === 2) selectedAttemptIds.delete([...selectedAttemptIds][0]); selectedAttemptIds.add(attempt.id); } else selectedAttemptIds.delete(attempt.id); renderAttemptHistory(); });
 accept.addEventListener('click', () => { void acceptScenario(); });
-document.querySelector('#language-switch').addEventListener('click', (event) => { event.preventDefault(); sessionStorage.setItem(stateKey, JSON.stringify({ decisions: draft, accepted: draftAccepted })); window.location.assign(event.currentTarget.href); });
+mapPanel?.addEventListener('click', (event) => { const district = event.target.closest('[data-map-district]'); if (district) { selectedDistrictId = district.dataset.mapDistrict; renderScenarioMap(draftAccepted ? (currentAttempt?.result || savedAcceptedAttempt()?.result) : null); } if (event.target.closest('[data-map-reset]')) { selectedDistrictId = null; renderScenarioMap(draftAccepted ? (currentAttempt?.result || savedAcceptedAttempt()?.result) : null); } });
+mapPanel?.addEventListener('keydown', (event) => { const district = event.target.closest('[data-map-district]'); if (district && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); selectedDistrictId = district.dataset.mapDistrict; renderScenarioMap(draftAccepted ? (currentAttempt?.result || savedAcceptedAttempt()?.result) : null); } });
+resultPanel.addEventListener('click', (event) => { if (event.target.closest('[data-request-global]')) void requestGlobalComparison(); if (event.target.closest('[data-copy-global]')) copyGlobalScenario(); });
+document.querySelector('#language-switch').addEventListener('click', (event) => { event.preventDefault(); sessionStorage.setItem(stateKey, JSON.stringify({ decisions: draft, accepted: draftAccepted, selectedDistrictId })); window.location.assign(event.currentTarget.href); });
 renderDraft();
 renderAttemptHistory();
 const restored = restoreAfterLocaleSwitch();
 const savedAttempt = savedAcceptedAttempt();
 if (!restored && savedAttempt) {
   acceptedDecisions = savedAttempt.decisions;
+  currentAttempt = [...attemptHistory.list()].reverse().find((attempt) => JSON.stringify(attempt.decisions) === JSON.stringify(savedAttempt.decisions)) || null;
+  currentGlobalComparison = usableGlobalComparison(currentAttempt?.globalComparison);
+  globalComparisonFailed = false;
   renderAcceptedResult(savedAttempt.result);
 }
 /*

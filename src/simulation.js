@@ -135,6 +135,115 @@ function candidateDecisions() {
     : districts.map((district) => ({ measureId: measure.id, districtId: district.id })));
 }
 
+function decisionDetails(decisions) {
+  return canonicalDecisions(decisions).map((decision) => {
+    const measure = measureById.get(decision.measureId);
+    return {
+      ...decision,
+      direction: measure.direction,
+      scope: measure.scope,
+      cost: measure.cost,
+      delay: measure.delay,
+    };
+  });
+}
+
+function compareScenarioDecisions(left, right) {
+  for (let index = 0; index < left.length; index += 1) {
+    const difference = compareDecisions(left[index], right[index]);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
+function modelVersion() {
+  // The version is derived from the supplied model and data, so changing either
+  // invalidates a previous global-search result instead of reusing a magic answer.
+  const source = JSON.stringify({ BUDGET, HORIZON_QUARTERS, weights, districts, measures, calculateState: calculateState.toString() });
+  let hash = 2166136261;
+  for (let index = 0; index < source.length; index += 1) {
+    hash ^= source.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `qala-${(hash >>> 0).toString(16)}`;
+}
+
+function eachFiveMeasureSelection(visit, selected = [], nextIndex = 0) {
+  if (selected.length === 5) {
+    visit(selected);
+    return;
+  }
+  for (let index = nextIndex; index <= measures.length - (5 - selected.length); index += 1) {
+    selected.push(measures[index]);
+    eachFiveMeasureSelection(visit, selected, index + 1);
+    selected.pop();
+  }
+}
+
+function eachTerritorialAssignment(selectedMeasures, visit, index = 0, decisions = []) {
+  if (index === selectedMeasures.length) {
+    visit(decisions);
+    return;
+  }
+  const measure = selectedMeasures[index];
+  if (measure.scope === 'city') {
+    decisions.push({ measureId: measure.id, districtId: null });
+    eachTerritorialAssignment(selectedMeasures, visit, index + 1, decisions);
+    decisions.pop();
+    return;
+  }
+  for (const district of districts) {
+    decisions.push({ measureId: measure.id, districtId: district.id });
+    eachTerritorialAssignment(selectedMeasures, visit, index + 1, decisions);
+    decisions.pop();
+  }
+}
+
+function findGlobalMaximum(acceptedScenario) {
+  if (!acceptedScenario?.accepted || !acceptedScenario.result || !Array.isArray(acceptedScenario.decisions)) {
+    throw new TypeError('An accepted scenario is required for global comparison');
+  }
+
+  let best = null;
+  let candidateCount = 0;
+  let tieCount = 0;
+  eachFiveMeasureSelection((selectedMeasures) => {
+    eachTerritorialAssignment(selectedMeasures, (assigned) => {
+      const decisions = canonicalDecisions(assigned);
+      const validation = validateScenario(decisions);
+      if (!validation.valid) return;
+      candidateCount += 1;
+      const state = calculateState(decisions);
+      const candidate = { decisions, validation, state };
+      if (!best || state.score > best.state.score) {
+        best = candidate;
+        tieCount = 1;
+        return;
+      }
+      if (state.score !== best.state.score) return;
+      tieCount += 1;
+      if (validation.cost < best.validation.cost
+        || (validation.cost === best.validation.cost && compareScenarioDecisions(decisions, best.decisions) < 0)) best = candidate;
+    });
+  });
+
+  if (!best) throw new Error('global_search_found_no_valid_scenario');
+  const result = scenarioResult(best.validation, best.state);
+  return {
+    decisions: best.decisions,
+    decisionDetails: decisionDetails(best.decisions),
+    cost: best.validation.cost,
+    score: best.state.score,
+    displayScore: Number(best.state.score.toFixed(5)),
+    delta: best.state.score - acceptedScenario.result.score,
+    displayDelta: Number((best.state.score - acceptedScenario.result.score).toFixed(5)),
+    tieCount,
+    candidateCount,
+    modelVersion: modelVersion(),
+    result,
+  };
+}
+
 function impactList(baseState, candidateState) {
   return districts.map((district) => {
     const baseDistrict = baseState.districtResults.find((item) => item.id === district.id);
@@ -381,4 +490,4 @@ function calculateScenario(decisions) {
   };
 }
 
-module.exports = { BUDGET, HORIZON_QUARTERS, validateScenario, calculateScenario, findRecommendation };
+module.exports = { BUDGET, HORIZON_QUARTERS, validateScenario, calculateScenario, findRecommendation, findGlobalMaximum, modelVersion };

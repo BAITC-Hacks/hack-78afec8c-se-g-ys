@@ -4,7 +4,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { catalogPayload, localizedDistrictName, normalizeLocale } = require('./src/data');
 const { renderPage } = require('./src/view');
-const { calculateScenario } = require('./src/simulation');
+const { calculateScenario, findGlobalMaximum, modelVersion } = require('./src/simulation');
 const { analyzeScenario } = require('./src/ai-analysis');
 const { createOpenAiAnalysisProvider } = require('./src/openai-analysis-provider');
 const { createAiAnalysisService } = require('./src/ai-analysis');
@@ -112,6 +112,27 @@ function localizeCalculation(calculation, locale) {
   };
 }
 
+function localizeGlobalComparison(comparison, locale) {
+  const catalog = catalogPayload(locale);
+  const measuresById = new Map(catalog.measures.map((measure) => [measure.id, measure]));
+  const localizeResult = (result) => ({
+    ...result,
+    districts: result.districts.map((district) => ({ ...district, name: localizedDistrictName(district.id, locale) })),
+    weakestDistrict: { ...result.weakestDistrict, name: localizedDistrictName(result.weakestDistrict.id, locale) },
+    criticalIndicators: result.criticalIndicators.map((item) => ({ ...item, districtName: localizedDistrictName(item.districtId, locale) })),
+  });
+  return {
+    ...comparison,
+    decisionDetails: comparison.decisionDetails.map((decision) => ({
+      ...decision,
+      name: measuresById.get(decision.measureId).name,
+      direction: measuresById.get(decision.measureId).direction,
+      districtName: decision.districtId ? localizedDistrictName(decision.districtId, locale) : null,
+    })),
+    result: localizeResult(comparison.result),
+  };
+}
+
 function createServer({ analysisProvider = createOpenAiAnalysisProvider(), aiProvider, aiService } = {}) {
   const cachedProvider = aiProvider || (analysisProvider?.analyze ? async ({ locale, result }) => {
     const outcome = await analyzeScenario({ result }, analysisProvider);
@@ -125,6 +146,7 @@ function createServer({ analysisProvider = createOpenAiAnalysisProvider(), aiPro
   } : null);
   const cachedAiService = aiService || createAiAnalysisService({ provider: cachedProvider });
   const attempts = new Map();
+  let globalSearchCache = null;
   return http.createServer(async (request, response) => {
     const url = new URL(request.url, 'http://qala.local');
     if (request.method === 'POST' && url.pathname === '/api/scenarios/accept') {
@@ -163,6 +185,30 @@ function createServer({ analysisProvider = createOpenAiAnalysisProvider(), aiPro
         return sendJson(response, 400, { accepted: false, errors: [{ code: 'invalid_json', message: 'Request body must be valid JSON' }] });
       }
     }
+    const globalComparisonMatch = url.pathname.match(/^\/api\/attempts\/([^/]+)\/global-comparison$/);
+    if (request.method === 'POST' && globalComparisonMatch) {
+      const attemptId = decodeURIComponent(globalComparisonMatch[1]);
+      const context = attempts.get(attemptId);
+      if (!context) return sendJson(response, 404, { error: 'Attempt not found' });
+      try {
+        const version = modelVersion();
+        if (!globalSearchCache || globalSearchCache.modelVersion !== version) {
+          globalSearchCache = findGlobalMaximum(context.calculation);
+        }
+        const comparison = {
+          ...globalSearchCache,
+          delta: globalSearchCache.score - context.calculation.result.score,
+          displayDelta: Number((globalSearchCache.score - context.calculation.result.score).toFixed(5)),
+        };
+        return sendJson(response, 200, {
+          attemptId,
+          acceptedScenarioScore: context.calculation.result.score,
+          comparison: localizeGlobalComparison(comparison, requestLocale(request)),
+        });
+      } catch {
+        return sendJson(response, 503, { error: 'global_comparison_unavailable', retry: true });
+      }
+    }
     const analysisMatch = url.pathname.match(/^\/api\/attempts\/([^/]+)\/analysis$/);
     if (request.method === 'POST' && analysisMatch) {
       try {
@@ -194,7 +240,7 @@ function createServer({ analysisProvider = createOpenAiAnalysisProvider(), aiPro
     if (request.method !== 'GET') return sendJson(response, 405, { error: 'Method not allowed' });
     if (url.pathname === '/') {
       response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      return response.end(renderPage(catalogPayload(requestLocale(request))));
+      return response.end(renderPage({ ...catalogPayload(requestLocale(request)), modelVersion: modelVersion() }));
     }
     if (url.pathname === '/api/catalog') return sendJson(response, 200, catalogPayload(requestLocale(request)));
     return sendJson(response, 404, { error: 'Not found' });
