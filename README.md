@@ -46,3 +46,5 @@ npm start
 ```
 
 Ключ не передаётся браузеру и не сохраняется в localStorage. Без `OPENAI_API_KEY` приложение продолжает работать с базовым разбором.
+
+The cached API at `POST /api/attempts/:attemptId/analysis` returns one verified AI version per attempt and locale (`ru` or `kk`), deduplicating concurrent requests and falling back to the localized basic analysis on failure.

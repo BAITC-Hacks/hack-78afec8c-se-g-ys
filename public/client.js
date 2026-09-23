@@ -1,5 +1,6 @@
 const text = window.qalaI18n;
 const locale = window.qalaLocale;
+const analysisText = window.qalaAnalysisText;
 const stateKey = 'qala-locale-switch-v1';
 const search = document.querySelector('#search');
 const scope = document.querySelector('#scope');
@@ -223,6 +224,111 @@ async function acceptScenario(restoring = false) {
       draftMessage.textContent = text.accepted;
     }
   }
+/* Superseded Issue 10 client flow; the server-side cached bilingual API remains available.
+  draft.push({ measureId, districtId });
+  renderDraft();
+}
+
+function analysisMarkup(analysis, error) {
+  const facts = currentAttempt?.result?.facts || [];
+  const factById = new Map(facts.map((fact) => [fact.id, fact]));
+  const sections = (analysis.sections || []).map((section) => `<article class="analysis-section"><h4>${escapeHtml(section.title)}</h4><ul>${(section.conclusions || []).map((conclusion) => `<li>${escapeHtml(conclusion.text)}<details class="analysis-evidence"><summary>${analysisText.evidence}</summary>${conclusion.factIds.map((factId) => { const fact = factById.get(factId); return `<span data-fact-id="${escapeHtml(factId)}">${escapeHtml(fact?.label || factId)}: ${escapeHtml(fact?.value ?? '')} ${escapeHtml(fact?.unit || '')}</span>`; }).join('<br>')}</details></li>`).join('')}</ul></article>`).join('');
+  const statusMessage = error ? `${escapeHtml(error.message)} <button type="button" data-retry-analysis>${analysisText.retry}</button>` : (analysis.kind === 'ai' ? '' : analysisText.pending);
+  return `<section class="analysis-panel" id="ai-analysis"><h3>${escapeHtml(analysis.label)}</h3><p>${statusMessage}</p><div class="analysis-sections">${sections}</div></section>`;
+}
+
+function renderAnalysis(analysis, error = null) {
+  const panel = document.querySelector('#ai-analysis');
+  if (panel) panel.outerHTML = analysisMarkup(analysis, error);
+}
+
+function renderResult(result) {
+  const critical = result.criticalIndicators.length ? result.criticalIndicators.map((item) => `${item.districtName}: ${item.indicatorId} = ${item.value.toFixed(2)}`).join(' · ') : text.none;
+  resultPanel.hidden = false;
+  resultPanel.innerHTML = `<h3>${text.result}</h3><div class="result-summary"><span>${text.spent} <b>${result.cost}</b></span><span>${text.score} <b>${result.score.toFixed(5)}</b></span><span>${text.increase} <b>${result.scoreDelta.toFixed(5)}</b></span><span>${text.weighted} <b>${result.weightedAverage.toFixed(3)}</b></span></div><p>${text.weakest}: <b>${escapeHtml(result.weakestDistrict.name)}</b> (${result.weakestDistrict.score.toFixed(3)}). ${text.criticalCount}: <b>${result.criticalCount}</b> — ${escapeHtml(critical)}.</p><p>${text.synergies}: ${result.synergies.length ? result.synergies.map((item) => `${escapeHtml(item.title)}: ${item.indicatorId} +${item.bonus}`).join(' · ') : text.none}</p><div id="ai-analysis"></div>`;
+  renderAnalysis(result.basicAnalysis);
+}
+
+function isCurrentAnalysisContext(context) {
+  return activeAnalysisContext?.attemptId === context.attemptId && activeAnalysisContext?.locale === context.locale;
+}
+
+async function requestAnalysis(attemptId, requestedLocale = locale) {
+  const context = { attemptId, locale: requestedLocale };
+  activeAnalysisContext = context;
+  const saved = attemptHistory.get(attemptId)?.analyses?.[requestedLocale];
+  if (saved) {
+    if (isCurrentAnalysisContext(context)) renderAnalysis(saved);
+    return saved;
+  }
+  try {
+    const response = await fetch(`/api/attempts/${encodeURIComponent(attemptId)}/analysis`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ locale: requestedLocale }) });
+    const outcome = await response.json();
+    if (outcome.analysis) {
+      if (outcome.status === 'ready') {
+        const savedAttempt = attemptHistory.saveAnalysis(attemptId, requestedLocale, outcome.analysis);
+        if (currentAttempt?.id === attemptId) currentAttempt = savedAttempt;
+        localStorage.setItem('qala-last-attempt', attemptId);
+      }
+      if (currentAttempt?.id === attemptId && isCurrentAnalysisContext(context)) renderAnalysis(outcome.analysis, outcome.status === 'fallback' ? outcome.error : null);
+    }
+    return outcome.analysis;
+  } catch (error) {
+    if (isCurrentAnalysisContext(context) && currentAttempt) renderAnalysis(currentAttempt.result.basicAnalysis, { code: 'network_error', message: error.message || 'AI analysis is unavailable' });
+    return null;
+  }
+}
+
+function renderAttemptHistory() {
+  const attempts = attemptHistory.list();
+  attemptHistoryEmpty.hidden = attempts.length > 0;
+  attemptList.innerHTML = attempts.map((attempt) => `<li class="draft-item"><span><b>${escapeHtml(attempt.id)}</b> · ${attempt.acceptedAt}</span><span class="attempt-actions"><button type="button" data-open-attempt="${escapeHtml(attempt.id)}">${analysisText.open}</button><button type="button" data-copy-attempt="${escapeHtml(attempt.id)}">${analysisText.copy}</button><button type="button" data-compare-attempt="${escapeHtml(attempt.id)}">${analysisText.comparison}</button></span></li>`).join('');
+}
+
+function openAttempt(attemptId) {
+  const attempt = attemptHistory.get(attemptId);
+  if (!attempt) return;
+  currentAttempt = attempt;
+  acceptedScenario = true;
+  activeAnalysisContext = { attemptId, locale };
+  draft.splice(0, draft.length, ...attempt.decisions.map((item) => ({ ...item })));
+  renderDraft();
+  renderResult(attempt.result);
+  const saved = attempt.analyses?.[locale];
+  if (saved) renderAnalysis(saved);
+  else void requestAnalysis(attempt.id);
+}
+
+function copyAttempt(attemptId) {
+  const attempt = attemptHistory.get(attemptId);
+  if (!attempt) return;
+  currentAttempt = null;
+  acceptedScenario = false;
+  draft.splice(0, draft.length, ...attempt.decisions.map((item) => ({ ...item })));
+  renderDraft();
+  draftMessage.textContent = text.draftHelp;
+}
+
+function acceptScenario() {
+  if (acceptedScenario) return;
+  acceptedScenario = true;
+  accept.disabled = true;
+  draftMessage.textContent = text.calculating;
+  const attemptId = globalThis.crypto?.randomUUID?.() || `attempt-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  fetch('/api/scenarios/accept', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ attemptId, decisions: draft, locale }) })
+    .then(async (response) => ({ response, payload: await response.json() }))
+    .then(({ response, payload }) => {
+      if (!response.ok) { acceptedScenario = false; draftMessage.textContent = payload.errors.map((item) => item.message).join(' '); renderDraft(); return; }
+      currentAttempt = attemptHistory.append(payload);
+      localStorage.setItem('qala-last-attempt', currentAttempt.id);
+      renderResult(currentAttempt.result);
+      renderDraft();
+      draftMessage.textContent = text.accepted;
+      renderAttemptHistory();
+      void requestAnalysis(currentAttempt.id, locale);
+    })
+    .catch((error) => { acceptedScenario = false; draftMessage.textContent = error.message || 'Request failed'; renderDraft(); });
+*/
 }
 
 function restoreAfterLocaleSwitch() {
@@ -236,6 +342,11 @@ function restoreAfterLocaleSwitch() {
     if (state.accepted) void acceptScenario(true);
     return true;
   } catch { return false; }
+/*
+    if (state.accepted && state.attemptId && attemptHistory.get(state.attemptId)) openAttempt(state.attemptId);
+    else { draft.push(...(state.decisions || []).map((item) => ({ ...item }))); acceptedScenario = false; renderDraft(); }
+  } catch { sessionStorage.removeItem(stateKey); }
+*/
 }
 
 search.addEventListener('input', filterMeasures);
@@ -254,3 +365,22 @@ if (!restored && savedAttempt) {
   acceptedDecisions = savedAttempt.decisions;
   renderAcceptedResult(savedAttempt.result);
 }
+/*
+draftList.addEventListener('click', (event) => { const button = event.target.closest('[data-remove]'); if (button) { draft.splice(Number(button.dataset.remove), 1); renderDraft(); } });
+attemptList.addEventListener('click', (event) => {
+  const open = event.target.closest('[data-open-attempt]');
+  const copy = event.target.closest('[data-copy-attempt]');
+  if (open) openAttempt(open.dataset.openAttempt);
+  if (copy) copyAttempt(copy.dataset.copyAttempt);
+});
+resultPanel.addEventListener('click', (event) => { if (event.target.closest('[data-retry-analysis]') && currentAttempt) void requestAnalysis(currentAttempt.id, locale); });
+accept.addEventListener('click', acceptScenario);
+document.querySelector('#language-switch').addEventListener('click', (event) => {
+  event.preventDefault();
+  sessionStorage.setItem(stateKey, JSON.stringify({ decisions: draft, accepted: acceptedScenario, attemptId: currentAttempt?.id || null }));
+  window.location.assign(event.currentTarget.href);
+});
+renderDraft();
+renderAttemptHistory();
+restoreAfterLocaleSwitch();
+*/
