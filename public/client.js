@@ -1,3 +1,6 @@
+const text = window.qalaI18n;
+const locale = window.qalaLocale;
+const stateKey = 'qala-locale-switch-v1';
 const search = document.querySelector('#search');
 const scope = document.querySelector('#scope');
 const cards = [...document.querySelectorAll('[data-measure]')];
@@ -39,14 +42,14 @@ function districtNameFor(decision) {
   return option?.textContent ?? decision.districtId;
 }
 
-function decisionLabel(decision) { return `${decision.measureId} · ${districtNameFor(decision) || 'Весь город'}`; }
+function decisionLabel(decision) { return `${decision.measureId} · ${districtNameFor(decision) || text.wholeCity}`; }
 function impactLabel(change) { return `${change.indicatorId}: ${change.delta > 0 ? '+' : ''}${change.delta.toFixed(2)}`; }
 function escapeHtml(value) { return String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#039;'); }
 
 function recommendationMarkup(recommendation) {
-  if (!recommendation.found) return `<section class="recommendation"><h3>Рекомендуемая точечная замена</h3><p>${recommendation.message}</p></section>`;
-  const impacts = recommendation.impacts.map((impact) => `<li><strong>${impact.name}</strong><span>Выигрыш: ${impact.gains.map(impactLabel).join(' · ') || 'нет'}</span><span>Потери: ${impact.losses.map(impactLabel).join(' · ') || 'нет'}</span></li>`).join('');
-  return `<section class="recommendation"><h3>Рекомендуемая точечная замена</h3><p><b>${decisionLabel(recommendation.changedDecision.from)}</b> заменить на <b>${decisionLabel(recommendation.changedDecision.to)}</b>. Прирост неокруглённого Score: <b>+${recommendation.scoreDelta.toFixed(5)}</b>; стоимость сценария: <b>${recommendation.cost}</b> (${recommendation.costDelta >= 0 ? '+' : ''}${recommendation.costDelta}).</p><ul class="recommendation-impacts">${impacts}</ul></section>`;
+  if (!recommendation.found) return `<section class="recommendation"><h3>${text.recommendation}</h3><p>${text.noRecommendation}</p></section>`;
+  const impacts = recommendation.impacts.map((impact) => `<li><strong>${impact.name}</strong><span>${text.gain}: ${impact.gains.map(impactLabel).join(' · ') || text.none}</span><span>${text.losses}: ${impact.losses.map(impactLabel).join(' · ') || text.none}</span></li>`).join('');
+  return `<section class="recommendation"><h3>${text.recommendation}</h3><p><b>${decisionLabel(recommendation.changedDecision.from)}</b> ${text.replace} <b>${decisionLabel(recommendation.changedDecision.to)}</b>. ${text.scoreIncrease}: <b>+${recommendation.scoreDelta.toFixed(5)}</b>; ${text.scenarioCost}: <b>${recommendation.cost}</b> (${recommendation.costDelta >= 0 ? '+' : ''}${recommendation.costDelta}).</p><ul class="recommendation-impacts">${impacts}</ul></section>`;
 }
 
 function factValue(fact) {
@@ -62,30 +65,30 @@ function basicAnalysisMarkup(analysis, facts) {
 }
 
 function resultMarkup(result) {
-  const critical = result.criticalIndicators.length ? result.criticalIndicators.map((item) => `${item.districtName}: ${item.indicatorId} = ${item.value.toFixed(2)}`).join(' · ') : 'Нет';
+  const critical = result.criticalIndicators.length ? result.criticalIndicators.map((item) => `${item.districtName}: ${item.indicatorId} = ${item.value.toFixed(2)}`).join(' · ') : text.none;
   const analysis = result.basicAnalysis && result.facts ? basicAnalysisMarkup(result.basicAnalysis, result.facts) : '';
-  return `<h3>Результат на конец Q8</h3><div class="result-summary"><span>Расход <b>${result.cost}</b></span><span>Astana Quality of Life Score <b>${result.score.toFixed(5)}</b></span><span>Прирост <b>${result.scoreDelta.toFixed(5)}</b></span><span>Средневзвешенный результат <b>${result.weightedAverage.toFixed(3)}</b></span></div><p>Самый слабый район: <b>${result.weakestDistrict.name}</b> (${result.weakestDistrict.score.toFixed(3)}). Критических показателей: <b>${result.criticalCount}</b> — ${critical}.</p><p>Активированные синергии:</p><ul>${result.synergies.length ? result.synergies.map((item) => `<li>${item.title}: ${item.indicatorId} +${item.bonus}</li>`).join('') : '<li>Нет</li>'}</ul><div class="result-districts">${result.districts.map((district) => `<div class="result-district"><strong>${district.name}<small>Оценка ${district.score.toFixed(3)}</small></strong><span>Показатели Q8<small>${Object.entries(district.indicators).map(([id, value]) => `${id}: ${value.toFixed(2)}`).join(' · ')}</small></span><span>Изменения<small>${Object.entries(district.changes).filter(([, value]) => value !== 0).map(([id, value]) => `${id}: ${value > 0 ? '+' : ''}${value.toFixed(2)}`).join(' · ') || 'Нет изменений'}</small></span></div>`).join('')}</div>${analysis}${recommendationMarkup(result.recommendation)}`;
+  return `<h3>${text.result}</h3><div class="result-summary"><span>${text.spent} <b>${result.cost}</b></span><span>${text.score} <b>${result.score.toFixed(5)}</b></span><span>${text.increase} <b>${result.scoreDelta.toFixed(5)}</b></span><span>${text.weighted} <b>${result.weightedAverage.toFixed(3)}</b></span></div><p>${text.weakest}: <b>${result.weakestDistrict.name}</b> (${result.weakestDistrict.score.toFixed(3)}). ${text.criticalCount}: <b>${result.criticalCount}</b> — ${critical}.</p><p>${text.synergies}:</p><ul>${result.synergies.length ? result.synergies.map((item) => `<li>${item.title}: ${item.indicatorId} +${item.bonus}</li>`).join('') : `<li>${text.none}</li>`}</ul><div class="result-districts">${result.districts.map((district) => `<div class="result-district"><strong>${district.name}<small>${text.scoreLabel} ${district.score.toFixed(3)}</small></strong><span>${text.q8Indicators}<small>${Object.entries(district.indicators).map(([id, value]) => `${id}: ${value.toFixed(2)}`).join(' · ')}</small></span><span>${text.changes}<small>${Object.entries(district.changes).filter(([, value]) => value !== 0).map(([id, value]) => `${id}: ${value > 0 ? '+' : ''}${value.toFixed(2)}`).join(' · ') || text.noChanges}</small></span></div>`).join('')}</div>${analysis}${recommendationMarkup(result.recommendation)}`;
 }
 
 function showResult(result) { resultPanel.hidden = false; resultPanel.innerHTML = resultMarkup(result); }
 function saveAcceptedResult(decisions, result) { try { localStorage.setItem(acceptedResultStorageKey, JSON.stringify({ decisions, result })); } catch { /* Result remains visible without storage. */ } }
 function savedAcceptedResult() { try { const saved = JSON.parse(localStorage.getItem(acceptedResultStorageKey)); return saved?.result?.basicAnalysis && saved?.result?.facts ? saved.result : null; } catch { return null; } }
-function renderAcceptedResult(result) { showResult(result); draftAccepted = true; renderDraft(); draftMessage.textContent = 'Попытка принята и больше не изменяется.'; }
-
+function renderAcceptedResult(result) { showResult(result); draftAccepted = true; renderDraft(); draftMessage.textContent = text.accepted; }
 function signed(value, digits = 2) { return `${value > 0 ? '+' : ''}${value.toFixed(digits)}`; }
+
 function renderComparison(attempts) {
   const selected = attempts.filter((attempt) => selectedAttemptIds.has(attempt.id));
   if (selected.length !== 2) { attemptComparison.hidden = true; attemptComparison.innerHTML = ''; return; }
   const comparison = window.QalaHistory.compareAttempts(selected[0], selected[1]);
-  const districts = comparison.districts.map((district) => `<li><b>${escapeHtml(district.name)}</b>: ${Object.entries(district.changeDeltas).filter(([, value]) => value !== 0).map(([id, value]) => `${id}: ${signed(value)}`).join(' · ') || 'Нет различий'}</li>`).join('');
+  const districts = comparison.districts.map((district) => `<li><b>${escapeHtml(district.name)}</b>: ${Object.entries(district.changeDeltas).filter(([, value]) => value !== 0).map(([id, value]) => `${id}: ${signed(value)}`).join(' · ') || text.noChanges}</li>`).join('');
   attemptComparison.hidden = false;
-  attemptComparison.innerHTML = `<h3>Сравнение попыток</h3><div class="result-summary"><span>Первая: <b>${comparison.left.cost}</b> ед. · Score <b>${comparison.left.score.toFixed(5)}</b></span><span>Вторая: <b>${comparison.right.cost}</b> ед. · Score <b>${comparison.right.score.toFixed(5)}</b></span><span>Разница: расход <b>${signed(comparison.costDelta, 0)}</b> · Score <b>${signed(comparison.scoreDelta, 5)}</b></span></div><p><b>Решения первой:</b> ${escapeHtml(comparison.left.decisions.map(decisionLabel).join(', '))}</p><p><b>Решения второй:</b> ${escapeHtml(comparison.right.decisions.map(decisionLabel).join(', '))}</p><p><b>Разница изменений показателей районов (вторая − первая):</b></p><ul>${districts}</ul>`;
+  attemptComparison.innerHTML = `<h3>Сравнение попыток</h3><div class="result-summary"><span>Первая: <b>${comparison.left.cost}</b> ${text.unit} · Score <b>${comparison.left.score.toFixed(5)}</b></span><span>Вторая: <b>${comparison.right.cost}</b> ${text.unit} · Score <b>${comparison.right.score.toFixed(5)}</b></span><span>Разница: ${text.spent.toLowerCase()} <b>${signed(comparison.costDelta, 0)}</b> · Score <b>${signed(comparison.scoreDelta, 5)}</b></span></div><p><b>Решения первой:</b> ${escapeHtml(comparison.left.decisions.map(decisionLabel).join(', '))}</p><p><b>Решения второй:</b> ${escapeHtml(comparison.right.decisions.map(decisionLabel).join(', '))}</p><p><b>Разница изменений показателей районов (вторая − первая):</b></p><ul>${districts}</ul>`;
 }
 
 function renderAttemptHistory() {
   const attempts = attemptHistory.list();
   attemptHistoryEmpty.hidden = attempts.length !== 0;
-  attemptList.innerHTML = attempts.map((attempt, index) => `<li class="draft-item"><span><b>Попытка ${index + 1}</b> · расход ${attempt.result.cost} · Score ${attempt.result.score.toFixed(5)}</span><span><button type="button" data-open-attempt="${index}">Открыть результат</button><button type="button" data-copy-attempt="${index}">Создать редактируемую копию</button><label><input type="checkbox" data-compare-attempt="${index}"${selectedAttemptIds.has(attempt.id) ? ' checked' : ''}> Сравнить</label></span></li>`).join('');
+  attemptList.innerHTML = attempts.map((attempt, index) => `<li class="draft-item"><span><b>Попытка ${index + 1}</b> · ${text.spent.toLowerCase()} ${attempt.result.cost} · Score ${attempt.result.score.toFixed(5)}</span><span><button type="button" data-open-attempt="${index}">Открыть результат</button><button type="button" data-copy-attempt="${index}">Создать редактируемую копию</button><label><input type="checkbox" data-compare-attempt="${index}"${selectedAttemptIds.has(attempt.id) ? ' checked' : ''}> Сравнить</label></span></li>`).join('');
   renderComparison(attempts);
 }
 
@@ -100,16 +103,16 @@ function copyAttempt(attempt) {
 
 function localErrors() {
   const errors = [];
-  if (draft.length !== 5) errors.push('Нужно выбрать ровно пять решений.');
-  if (new Set(draft.map((item) => item.measureId)).size !== draft.length) errors.push('Мероприятия нельзя повторять.');
-  if (draft.reduce((sum, item) => sum + measureOf(item.measureId).cost, 0) > 100) errors.push('Расход превышает бюджет 100.');
+  if (draft.length !== 5) errors.push(text.exactFive);
+  if (new Set(draft.map((item) => item.measureId)).size !== draft.length) errors.push(text.noDuplicates);
+  if (draft.reduce((sum, item) => sum + measureOf(item.measureId).cost, 0) > 100) errors.push(text.overBudget);
   const directions = {};
   draft.forEach((item) => { const direction = measureOf(item.measureId).direction; directions[direction] = (directions[direction] || 0) + 1; });
-  if (Object.values(directions).some((count) => count > 2)) errors.push('В одном направлении нельзя выбрать более двух мероприятий.');
-  if (draft.some((item) => measureOf(item.measureId).scope === 'district' && !item.districtId)) errors.push('Для районного мероприятия выберите район.');
-  if (draft.some((item) => measureOf(item.measureId).scope === 'city' && item.districtId)) errors.push('Городское мероприятие не требует района.');
-  if (draft.some((item) => item.measureId === 'M1') && draft.some((item) => item.measureId === 'M3')) errors.push('M1 и M3 несовместимы.');
-  [['M4', 'M7'], ['M5', 'M13']].forEach(([left, right]) => { const first = draft.find((item) => item.measureId === left); const second = draft.find((item) => item.measureId === right); if (first && second && first.districtId === second.districtId) errors.push(`${left} и ${right} нельзя выбрать в одном районе.`); });
+  if (Object.values(directions).some((count) => count > 2)) errors.push(text.directionLimit);
+  if (draft.some((item) => measureOf(item.measureId).scope === 'district' && !item.districtId)) errors.push(text.districtRequired);
+  if (draft.some((item) => measureOf(item.measureId).scope === 'city' && item.districtId)) errors.push(text.cityNoDistrict);
+  if (draft.some((item) => item.measureId === 'M1') && draft.some((item) => item.measureId === 'M3')) errors.push(`M1 ${text.incompatible} M3.`);
+  [['M4', 'M7'], ['M5', 'M13']].forEach(([left, right]) => { const first = draft.find((item) => item.measureId === left); const second = draft.find((item) => item.measureId === right); if (first && second && first.districtId === second.districtId) errors.push(`${left} ${text.sameDistrict} ${right}.`); });
   return errors;
 }
 
@@ -118,7 +121,7 @@ function renderDraft() {
   document.querySelector('#draft-count').textContent = `${draft.length}/5`;
   document.querySelector('#draft-cost').textContent = cost;
   document.querySelector('#draft-remaining').textContent = 100 - cost;
-  draftList.innerHTML = draft.map((item, index) => `<li class="draft-item"><span><b>${item.measureId}</b> · ${item.districtName || 'Весь город'}</span><button type="button" data-remove="${index}"${draftAccepted ? ' disabled' : ''}>Удалить</button></li>`).join('');
+  draftList.innerHTML = draft.map((item, index) => `<li class="draft-item"><span><b>${item.measureId}</b> · ${item.districtName || districtNameFor(item) || text.wholeCity}</span><button type="button" data-remove="${index}"${draftAccepted ? ' disabled' : ''}>${text.remove}</button></li>`).join('');
   const errors = localErrors();
   draftMessage.textContent = errors.join(' ');
   accept.disabled = draftAccepted || errors.length > 0;
@@ -132,49 +135,49 @@ function addMeasure(button) {
   const select = card.querySelector('[data-district-for]');
   const districtId = select ? select.value : null;
   const districtName = select?.selectedOptions[0]?.textContent;
-  if (measureOf(measureId).scope === 'district' && !districtId) { draftMessage.textContent = 'Сначала выберите район для мероприятия.'; return; }
-  if (draft.some((item) => item.measureId === measureId)) { draftMessage.textContent = 'Это мероприятие уже выбрано.'; return; }
+  if (measureOf(measureId).scope === 'district' && !districtId) { draftMessage.textContent = text.selectDistrictFirst; return; }
+  if (draft.some((item) => item.measureId === measureId)) { draftMessage.textContent = text.alreadySelected; return; }
   draft.push({ measureId, districtId, districtName });
   renderDraft();
 }
 
-async function acceptScenario() {
-  if (draftAccepted) return;
+async function acceptScenario(restoring = false) {
+  if (draftAccepted && !restoring) return;
   accept.disabled = true;
-  draftMessage.textContent = 'Расчёт результата на Q8…';
-  const response = await fetch('/api/scenarios/accept', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decisions: draft }) });
+  draftMessage.textContent = text.calculating;
+  const response = await fetch('/api/scenarios/accept', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decisions: draft, locale }) });
   const payload = await response.json();
   if (!response.ok) { draftMessage.textContent = payload.errors.map((item) => item.message).join(' '); renderDraft(); return; }
   saveAcceptedResult(payload.decisions, payload.result);
   showResult(payload.result);
   draftAccepted = true;
   renderDraft();
-  try { attemptHistory.append(payload); renderAttemptHistory(); draftMessage.textContent = 'Попытка принята и сохранена в истории. Исходная запись больше не изменяется.'; } catch { draftMessage.textContent = 'Попытка принята, но браузер не позволил сохранить её в локальной истории.'; }
+  if (!restoring) { try { attemptHistory.append(payload); renderAttemptHistory(); draftMessage.textContent = 'Попытка принята и сохранена в истории. Исходная запись больше не изменяется.'; } catch { draftMessage.textContent = text.accepted; } }
+}
+
+function restoreAfterLocaleSwitch() {
+  const saved = sessionStorage.getItem(stateKey);
+  if (!saved) return false;
+  sessionStorage.removeItem(stateKey);
+  try {
+    const state = JSON.parse(saved);
+    draft.push(...state.decisions.map((item) => ({ measureId: item.measureId, districtId: item.districtId ?? null, districtName: districtNameFor(item) })));
+    renderDraft();
+    if (state.accepted) void acceptScenario(true);
+    return true;
+  } catch { return false; }
 }
 
 search.addEventListener('input', filterMeasures);
 scope.addEventListener('change', filterMeasures);
 document.querySelectorAll('[data-add-measure]').forEach((button) => button.addEventListener('click', () => addMeasure(button)));
-draftList.addEventListener('click', (event) => { const button = event.target.closest('[data-remove]'); if (button) { draft.splice(Number(button.dataset.remove), 1); renderDraft(); } });
-attemptList.addEventListener('click', (event) => {
-  const open = event.target.closest('[data-open-attempt]');
-  const copy = event.target.closest('[data-copy-attempt]');
-  if (!open && !copy) return;
-  const attempt = attemptHistory.list()[Number((open ?? copy).dataset.openAttempt ?? (open ?? copy).dataset.copyAttempt)];
-  if (!attempt) return;
-  if (open) showResult(attempt.result);
-  if (copy) copyAttempt(attempt);
-});
-attemptList.addEventListener('change', (event) => {
-  const checkbox = event.target.closest('[data-compare-attempt]');
-  if (!checkbox) return;
-  const attempt = attemptHistory.list()[Number(checkbox.dataset.compareAttempt)];
-  if (!attempt) return;
-  if (checkbox.checked) { if (selectedAttemptIds.size === 2) selectedAttemptIds.delete([...selectedAttemptIds][0]); selectedAttemptIds.add(attempt.id); } else selectedAttemptIds.delete(attempt.id);
-  renderAttemptHistory();
-});
-accept.addEventListener('click', acceptScenario);
+draftList.addEventListener('click', (event) => { const button = event.target.closest('[data-remove]'); if (button && !draftAccepted) { draft.splice(Number(button.dataset.remove), 1); renderDraft(); } });
+attemptList.addEventListener('click', (event) => { const open = event.target.closest('[data-open-attempt]'); const copy = event.target.closest('[data-copy-attempt]'); if (!open && !copy) return; const attempt = attemptHistory.list()[Number((open ?? copy).dataset.openAttempt ?? (open ?? copy).dataset.copyAttempt)]; if (!attempt) return; if (open) showResult(attempt.result); if (copy) copyAttempt(attempt); });
+attemptList.addEventListener('change', (event) => { const checkbox = event.target.closest('[data-compare-attempt]'); if (!checkbox) return; const attempt = attemptHistory.list()[Number(checkbox.dataset.compareAttempt)]; if (!attempt) return; if (checkbox.checked) { if (selectedAttemptIds.size === 2) selectedAttemptIds.delete([...selectedAttemptIds][0]); selectedAttemptIds.add(attempt.id); } else selectedAttemptIds.delete(attempt.id); renderAttemptHistory(); });
+accept.addEventListener('click', () => { void acceptScenario(); });
+document.querySelector('#language-switch').addEventListener('click', (event) => { event.preventDefault(); sessionStorage.setItem(stateKey, JSON.stringify({ decisions: draft, accepted: draftAccepted })); window.location.assign(event.currentTarget.href); });
 renderDraft();
 renderAttemptHistory();
+const restored = restoreAfterLocaleSwitch();
 const savedResult = savedAcceptedResult();
-if (savedResult) renderAcceptedResult(savedResult);
+if (!restored && savedResult) renderAcceptedResult(savedResult);
