@@ -221,12 +221,159 @@ function findRecommendation(decisions, baseValidation, baseState) {
   };
 }
 
+function fact(id, scope, label, value, unit = '') {
+  return { id, scope, label, value, unit };
+}
+
+function decisionValue(decision) {
+  const measure = measureById.get(decision.measureId);
+  const district = decision.districtId ? districtById.get(decision.districtId) : null;
+  return `${measure.id} · ${measure.name}${district ? ` · ${district.name}` : ' · весь город'}`;
+}
+
+function highestChange(districtResults) {
+  return districtResults.flatMap((district) => indicators.map((indicator) => ({
+    district,
+    indicator,
+    change: district.changes[indicator.id],
+  }))).reduce((best, candidate) => candidate.change > best.change ? candidate : best);
+}
+
+function buildFacts(result) {
+  const facts = [
+    fact('scenario.score', 'scenario', 'Astana Quality of Life Score', result.score, 'балла'),
+    fact('scenario.score_delta', 'scenario', 'Прирост Score относительно базового состояния', result.scoreDelta, 'балла'),
+    fact('scenario.cost', 'scenario', 'Расход сценария', result.cost, 'ед.'),
+    fact('scenario.remaining_budget', 'scenario', 'Остаток бюджета', result.remainingBudget, 'ед.'),
+    fact('scenario.weighted_average', 'scenario', 'Средневзвешенный результат районов', result.weightedAverage, 'балла'),
+    fact('scenario.weakest_district.name', 'scenario', 'Самый слабый район', result.weakestDistrict.name),
+    fact('scenario.weakest_district.score', 'scenario', 'Оценка самого слабого района', result.weakestDistrict.score, 'балла'),
+    fact('scenario.critical_count', 'scenario', 'Количество критических показателей', result.criticalCount, 'шт.'),
+  ];
+  const highest = highestChange(result.districts);
+  facts.push(
+    fact('scenario.highest_change.district', 'scenario', 'Район с наибольшим изменением показателя', highest.district.name),
+    fact('scenario.highest_change.indicator', 'scenario', 'Показатель с наибольшим изменением', highest.indicator.id),
+    fact('scenario.highest_change.value', 'scenario', 'Наибольшее изменение показателя', highest.change, 'пункта'),
+  );
+
+  result.districts.forEach((district) => {
+    facts.push(fact(`scenario.district.${district.id}.score`, 'scenario', `Оценка района «${district.name}»`, district.score, 'балла'));
+    indicators.forEach((indicator) => {
+      const value = district.indicators[indicator.id];
+      if (value < 55) {
+        facts.push(fact(`scenario.district.${district.id}.indicator.${indicator.id}.value`, 'scenario', `${district.name}: ${indicator.id} на Q8`, value, 'пункта'));
+      }
+    });
+  });
+  result.synergies.forEach((synergy) => {
+    facts.push(fact(`scenario.synergy.${synergy.id}`, 'scenario', `Синергия ${synergy.title}`, synergy.bonus, `пункта ${synergy.indicatorId}`));
+  });
+
+  const recommendation = result.recommendation;
+  if (!recommendation.found) return facts;
+
+  facts.push(
+    fact('alternative.score', 'alternative', 'Score допустимой альтернативы', recommendation.score, 'балла'),
+    fact('alternative.score_delta', 'alternative', 'Прирост Score альтернативы к принятому сценарию', recommendation.scoreDelta, 'балла'),
+    fact('alternative.cost', 'alternative', 'Расход допустимой альтернативы', recommendation.cost, 'ед.'),
+    fact('alternative.cost_delta', 'alternative', 'Изменение расхода при точечной замене', recommendation.costDelta, 'ед.'),
+    fact('alternative.replacement.from', 'alternative', 'Заменяемое решение', decisionValue(recommendation.replacedDecision)),
+    fact('alternative.replacement.to', 'alternative', 'Новое решение', decisionValue(recommendation.replacementDecision)),
+  );
+  recommendation.impacts.forEach((impact) => {
+    impact.losses.forEach((loss) => {
+      facts.push(fact(`alternative.district.${impact.id}.indicator.${loss.indicatorId}.loss`, 'alternative', `${impact.name}: изменение ${loss.indicatorId} при замене`, loss.delta, 'пункта'));
+    });
+  });
+  return facts;
+}
+
+function buildBasicAnalysis(result) {
+  const facts = buildFacts(result);
+  const factIds = new Set(facts.map((item) => item.id));
+  const weakFacts = facts.filter((item) => item.id.includes('.indicator.') && item.id.endsWith('.value')).map((item) => item.id);
+  const problems = [{
+    id: 'weakest-district',
+    text: 'Самый слабый район в рассчитанном результате сохраняется точкой внимания модели.',
+    factIds: ['scenario.weakest_district.name', 'scenario.weakest_district.score'],
+  }];
+  if (weakFacts.length) {
+    problems.push({
+      id: 'remaining-weak-indicators',
+      text: 'В модели остаются слабые показатели. Это расчётные значения на Q8, а не прогноз городских происшествий.',
+      factIds: weakFacts,
+    });
+  } else {
+    problems.push({
+      id: 'critical-indicators',
+      text: 'Критические показатели определяются только по рассчитанному порогу ниже 40.',
+      factIds: ['scenario.critical_count'],
+    });
+  }
+
+  const recommendation = result.recommendation;
+  const replacement = recommendation.found
+    ? [{
+      id: 'targeted-replacement',
+      text: 'Рассчитана допустимая точечная замена: остальные четыре решения сценария не меняются.',
+      factIds: ['alternative.replacement.from', 'alternative.replacement.to', 'alternative.score_delta', 'alternative.cost_delta'],
+    }]
+    : [{
+      id: 'no-targeted-replacement',
+      text: 'В расчёте не найдено точечной замены со строго положительным приростом Score; это не доказывает глобальный максимум.',
+      factIds: ['scenario.score'],
+    }];
+  const tradeoffFacts = facts.filter((item) => item.id.endsWith('.loss')).map((item) => item.id);
+  if (recommendation.found) {
+    problems.push({
+      id: 'replacement-tradeoffs',
+      text: tradeoffFacts.length
+        ? 'Допустимая замена меняет одни показатели в пользу других; потери ниже рассчитаны для этой альтернативы.'
+        : 'Допустимая замена сравнивается только с принятым сценарием по рассчитанным Score и расходу.',
+      factIds: [...tradeoffFacts, 'alternative.score_delta', 'alternative.cost_delta'],
+    });
+  }
+
+  const sections = [
+    {
+      id: 'summary',
+      title: 'Итог',
+      conclusions: [{
+        id: 'scenario-result',
+        text: 'Итоговая оценка и её изменение относительно базового состояния рассчитаны локально для принятого сценария.',
+        factIds: ['scenario.score', 'scenario.score_delta', 'scenario.cost', 'scenario.remaining_budget', 'scenario.weighted_average'],
+      }],
+    },
+    {
+      id: 'strengths',
+      title: 'Сильные стороны',
+      conclusions: [{
+        id: 'largest-improvement',
+        text: 'Наибольшее рассчитанное улучшение показателя показывает сильную сторону этого набора решений на горизонте Q8.',
+        factIds: ['scenario.highest_change.district', 'scenario.highest_change.indicator', 'scenario.highest_change.value', 'scenario.critical_count'],
+      }],
+    },
+    { id: 'problems', title: 'Оставшиеся проблемы и компромиссы', conclusions: problems },
+    { id: 'replacement', title: 'Точечная замена', conclusions: replacement },
+  ];
+  for (const section of sections) {
+    for (const conclusion of section.conclusions) {
+      if (!conclusion.factIds.length || !conclusion.factIds.every((id) => factIds.has(id))) throw new Error('basic_analysis_has_unknown_fact');
+    }
+  }
+  return { label: 'Базовый разбор', kind: 'basic', sections, facts };
+}
+
 function calculateScenario(decisions) {
   const validation = validateScenario(decisions);
   if (!validation.valid) return { accepted: false, errors: validation.errors };
   const state = calculateState(decisions);
   const result = scenarioResult(validation, state);
   result.recommendation = findRecommendation(decisions, validation, state);
+  const { facts, ...basicAnalysis } = buildBasicAnalysis(result);
+  result.facts = facts;
+  result.basicAnalysis = basicAnalysis;
   return {
     accepted: true,
     decisions: decisions.map((decision) => ({ measureId: decision.measureId, districtId: decision.districtId ?? null })),
