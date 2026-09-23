@@ -8,6 +8,7 @@ const draftMessage = document.querySelector('#draft-message');
 const accept = document.querySelector('#accept-scenario');
 const resultPanel = document.querySelector('#result-panel');
 const acceptedResultStorageKey = 'qala.accepted-result.v1';
+let acceptedResult = null;
 
 function filterMeasures() {
   const query = search.value.trim().toLowerCase();
@@ -77,19 +78,21 @@ function saveAcceptedResult(decisions, result) {
 function savedAcceptedResult() {
   try {
     const saved = JSON.parse(localStorage.getItem(acceptedResultStorageKey));
-    return saved?.result?.basicAnalysis && saved?.result?.facts ? saved.result : null;
+    return saved?.result?.basicAnalysis && saved?.result?.facts && Array.isArray(saved.decisions) ? saved : null;
   } catch {
     return null;
   }
 }
 
 function renderAcceptedResult(result) {
+  acceptedResult = result;
   const critical = result.criticalIndicators.length ? result.criticalIndicators.map((item) => `${item.districtName}: ${item.indicatorId} = ${item.value.toFixed(2)}`).join(' · ') : 'Нет';
   resultPanel.hidden = false;
   resultPanel.innerHTML = `<h3>Результат на конец Q8</h3><div class="result-summary"><span>Расход <b>${result.cost}</b></span><span>Astana Quality of Life Score <b>${result.score.toFixed(5)}</b></span><span>Прирост <b>${result.scoreDelta.toFixed(5)}</b></span><span>Средневзвешенный результат <b>${result.weightedAverage.toFixed(3)}</b></span></div><p>Самый слабый район: <b>${result.weakestDistrict.name}</b> (${result.weakestDistrict.score.toFixed(3)}). Критических показателей: <b>${result.criticalCount}</b> — ${critical}.</p><p>Активированные синергии:</p><ul>${result.synergies.length ? result.synergies.map((item) => `<li>${item.title}: ${item.indicatorId} +${item.bonus}</li>`).join('') : '<li>Нет</li>'}</ul><div class="result-districts">${result.districts.map((district) => `<div class="result-district"><strong>${district.name}<small>Оценка ${district.score.toFixed(3)}</small></strong><span>Показатели Q8<small>${Object.entries(district.indicators).map(([id, value]) => `${id}: ${value.toFixed(2)}`).join(' · ')}</small></span><span>Изменения<small>${Object.entries(district.changes).filter(([, value]) => value !== 0).map(([id, value]) => `${id}: ${value > 0 ? '+' : ''}${value.toFixed(2)}`).join(' · ') || 'Нет изменений'}</small></span></div>`).join('')}</div>${basicAnalysisMarkup(result.basicAnalysis, result.facts)}${recommendationMarkup(result.recommendation)}`;
   document.querySelectorAll('[data-add-measure], [data-remove]').forEach((element) => { element.disabled = true; });
   accept.disabled = true;
   draftMessage.textContent = 'Попытка принята и больше не изменяется.';
+  window.QalaMap.update({ decisions: draft, validation: { cost: result.cost, errors: [] }, result });
 }
 
 function localErrors() {
@@ -120,6 +123,7 @@ function renderDraft() {
   const errors = localErrors();
   draftMessage.textContent = errors.join(' ');
   accept.disabled = errors.length > 0;
+  window.QalaMap.update({ decisions: draft, validation: { cost, errors }, result: acceptedResult });
 }
 
 function addMeasure(button) {
@@ -161,4 +165,11 @@ draftList.addEventListener('click', (event) => { const button = event.target.clo
 accept.addEventListener('click', acceptScenario);
 renderDraft();
 const savedResult = savedAcceptedResult();
-if (savedResult) renderAcceptedResult(savedResult);
+if (savedResult) {
+  draft.push(...savedResult.decisions.map((decision) => ({
+    ...decision,
+    districtName: document.querySelector(`[data-district-for="${decision.measureId}"] option[value="${decision.districtId}"]`)?.textContent,
+  })));
+  renderDraft();
+  renderAcceptedResult(savedResult.result);
+}
