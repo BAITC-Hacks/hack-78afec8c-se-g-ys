@@ -1,9 +1,11 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { catalogPayload, localizedDistrictName, normalizeLocale } = require('./src/data');
 const { renderPage } = require('./src/view');
 const { calculateScenario } = require('./src/simulation');
+const { createAiAnalysisService } = require('./src/ai-analysis');
 
 function sendJson(response, status, payload) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -43,12 +45,46 @@ const validationMessages = {
   },
 };
 
+const kazakhBasicAnalysis = {
+  label: 'Базалық талдау',
+  sections: { summary: 'Қорытынды', strengths: 'Күшті жақтар', problems: 'Қалған мәселелер мен ымыралар', replacement: 'Нүктелік ауыстыру' },
+  conclusions: {
+    'scenario-result': 'Қорытынды баға мен бастапқы жағдайға қатысты өзгеріс қабылданған сценарий үшін жергілікті есептелді.',
+    'largest-improvement': 'Көрсеткіштің ең үлкен есептік жақсаруы осы шешімдер жиынының Q8 көкжиегіндегі күшті жағын көрсетеді.',
+    'weakest-district': 'Есептелген нәтижедегі ең әлсіз аудан назар аударатын нүкте болып қалады.',
+    'remaining-weak-indicators': 'Модельде әлсіз көрсеткіштер қалды. Бұл Q8-дегі есептік мәндер, қалалық оқиғалардың болжамы емес.',
+    'critical-indicators': 'Сындарлы көрсеткіштер тек 40-тан төмен есептік шекпен анықталады.',
+    'replacement-tradeoffs': 'Рұқсат етілген ауыстыру кейбір көрсеткіштерді өзгелерінің пайдасына өзгертеді; төмендегі шығындар осы балама үшін есептелген.',
+    'targeted-replacement': 'Рұқсат етілген нүктелік ауыстыру есептелді: сценарийдің қалған төрт шешімі өзгермейді.',
+    'no-targeted-replacement': 'Score-дың қатаң оң өсімі бар нүктелік ауыстыру табылмады; бұл жаһандық максимумды дәлелдемейді.',
+  },
+};
+
+function localizeBasicAnalysis(analysis, locale) {
+  if (locale !== 'kk') return { ...analysis, locale: 'ru' };
+  return {
+    ...analysis,
+    locale: 'kk',
+    label: kazakhBasicAnalysis.label,
+    sections: analysis.sections.map((section) => ({
+      ...section,
+      title: kazakhBasicAnalysis.sections[section.id] || section.title,
+      conclusions: section.conclusions.map((conclusion) => ({
+        ...conclusion,
+        text: kazakhBasicAnalysis.conclusions[conclusion.id] || conclusion.text,
+      })),
+    })),
+  };
+}
+
 function localizeCalculation(calculation, locale) {
   if (!calculation.accepted) return {
     ...calculation,
     errors: calculation.errors.map((item) => ({ ...item, message: validationMessages[locale][item.code] ?? item.message })),
   };
-  if (locale === 'ru') return calculation;
+  if (locale === 'ru') {
+    return { ...calculation, result: { ...calculation.result, basicAnalysis: localizeBasicAnalysis(calculation.result.basicAnalysis, locale) } };
+  }
   const localizeDistrict = (district) => ({ ...district, name: localizedDistrictName(district.id, locale) });
   const localizeResult = (result) => ({
     ...result,
@@ -61,6 +97,7 @@ function localizeCalculation(calculation, locale) {
     ...calculation,
     result: {
       ...result,
+      basicAnalysis: localizeBasicAnalysis(result.basicAnalysis, locale),
       recommendation: {
         ...result.recommendation,
         impacts: result.recommendation.impacts.map((impact) => ({ ...impact, name: localizedDistrictName(impact.id, locale) })),
@@ -73,32 +110,71 @@ function localizeCalculation(calculation, locale) {
   };
 }
 
-function createServer() {
+function createServer(options = {}) {
+  const aiService = options.aiService || createAiAnalysisService({ provider: options.aiProvider });
+  const attempts = new Map();
   return http.createServer(async (request, response) => {
-    if (request.method === 'POST' && request.url === '/api/scenarios/accept') {
+    const url = new URL(request.url, 'http://qala.local');
+    if (request.method === 'POST' && url.pathname === '/api/scenarios/accept') {
       try {
         const body = await readJson(request);
         const calculation = calculateScenario(body.decisions);
-        const localized = localizeCalculation(calculation, normalizeLocale(body.locale));
-        return sendJson(response, localized.accepted ? 200 : 400, localized);
+        const locale = normalizeLocale(body.locale);
+        if (!calculation.accepted) {
+          const localized = localizeCalculation(calculation, locale);
+          return sendJson(response, 400, localized);
+        }
+        const attemptId = body.attemptId || crypto.randomUUID();
+        const savedDecisions = JSON.stringify(calculation.decisions);
+        const previous = attempts.get(attemptId);
+        if (previous && previous.decisions !== savedDecisions) {
+          return sendJson(response, 409, { accepted: false, errors: [{ code: 'attempt_context_conflict', message: 'Attempt ID is already bound to another scenario' }] });
+        }
+        attempts.set(attemptId, { decisions: savedDecisions, calculation });
+        const localized = localizeCalculation(calculation, locale);
+        return sendJson(response, 200, {
+          ...localized,
+          attemptId,
+          analysis: { status: 'loading', locale, analysis: localized.result.basicAnalysis },
+        });
       } catch {
         return sendJson(response, 400, { accepted: false, errors: [{ code: 'invalid_json', message: 'Request body must be valid JSON' }] });
       }
     }
-    if (request.method === 'GET' && request.url === '/client.js') {
+    const analysisMatch = url.pathname.match(/^\/api\/attempts\/([^/]+)\/analysis$/);
+    if (request.method === 'POST' && analysisMatch) {
+      try {
+        const body = await readJson(request);
+        const attemptId = decodeURIComponent(analysisMatch[1]);
+        const context = attempts.get(attemptId);
+        if (!context) return sendJson(response, 404, { error: 'Attempt not found' });
+        const locale = normalizeLocale(body.locale);
+        const outcome = await aiService.request({
+          attemptId,
+          locale,
+          facts: context.calculation.result.facts,
+          result: context.calculation.result,
+          basicAnalysis: localizeBasicAnalysis(context.calculation.result.basicAnalysis, locale),
+        });
+        return sendJson(response, 200, { attemptId, locale, ...outcome });
+      } catch {
+        return sendJson(response, 400, { error: 'invalid_json' });
+      }
+    }
+    if (request.method === 'GET' && url.pathname === '/client.js') {
       response.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8' });
       return response.end(fs.readFileSync(path.join(__dirname, 'public', 'client.js')));
     }
-    if (request.method === 'GET' && request.url === '/history.js') {
+    if (request.method === 'GET' && url.pathname === '/history.js') {
       response.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8' });
       return response.end(fs.readFileSync(path.join(__dirname, 'public', 'history.js')));
     }
     if (request.method !== 'GET') return sendJson(response, 405, { error: 'Method not allowed' });
-    if (new URL(request.url, 'http://qala.local').pathname === '/') {
+    if (url.pathname === '/') {
       response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       return response.end(renderPage(catalogPayload(requestLocale(request))));
     }
-    if (request.url.startsWith('/api/catalog')) return sendJson(response, 200, catalogPayload(requestLocale(request)));
+    if (url.pathname === '/api/catalog') return sendJson(response, 200, catalogPayload(requestLocale(request)));
     return sendJson(response, 404, { error: 'Not found' });
   });
 }

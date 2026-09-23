@@ -80,15 +80,31 @@
           throw new TypeError('Only an accepted scenario with decisions and a result can be saved');
         }
         const attempt = immutableCopy({
-          id: id(),
+          id: acceptedScenario.attemptId || id(),
           acceptedAt: now(),
           decisions: acceptedScenario.decisions,
           result: acceptedScenario.result,
+          analyses: acceptedScenario.analyses || {},
         });
         const attempts = read();
         attempts.push(attempt);
         storage.setItem(STORAGE_KEY, JSON.stringify(attempts));
         return immutableCopy(attempt);
+      },
+      get(attemptId) {
+        return immutableCopy(read().find((attempt) => attempt.id === attemptId) || null);
+      },
+      saveAnalysis(attemptId, locale, analysis) {
+        if (!['ru', 'kk'].includes(locale) || !analysis) throw new TypeError('A supported locale and analysis are required');
+        const attempts = read();
+        const index = attempts.findIndex((attempt) => attempt.id === attemptId);
+        if (index < 0) throw new Error('Accepted attempt not found');
+        attempts[index] = {
+          ...attempts[index],
+          analyses: { ...(attempts[index].analyses || {}), [locale]: analysis },
+        };
+        storage.setItem(STORAGE_KEY, JSON.stringify(attempts));
+        return immutableCopy(attempts[index]);
       },
     };
   }

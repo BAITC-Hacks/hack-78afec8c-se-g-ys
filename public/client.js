@@ -1,5 +1,6 @@
 const text = window.qalaI18n;
 const locale = window.qalaLocale;
+const analysisText = window.qalaAnalysisText;
 const stateKey = 'qala-locale-switch-v1';
 const search = document.querySelector('#search');
 const scope = document.querySelector('#scope');
@@ -10,7 +11,17 @@ const draftList = document.querySelector('#draft-list');
 const draftMessage = document.querySelector('#draft-message');
 const accept = document.querySelector('#accept-scenario');
 const resultPanel = document.querySelector('#result-panel');
+const attemptList = document.querySelector('#attempt-list');
+const attemptHistoryEmpty = document.querySelector('#attempt-history-empty');
+const attemptComparison = document.querySelector('#attempt-comparison');
+const attemptHistory = window.QalaHistory.createAttemptHistory(window.localStorage);
 let acceptedScenario = false;
+let currentAttempt = null;
+let activeAnalysisContext = null;
+
+function escapeHtml(value) {
+  return String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#039;');
+}
 
 function filterMeasures() {
   const query = search.value.trim().toLowerCase();
@@ -37,20 +48,6 @@ function decisionLabel(decision) {
   return `${decision.measureId} · ${decision.districtId ? districtName(decision.districtId) : text.wholeCity}`;
 }
 
-function impactLabel(change) {
-  return `${change.indicatorId}: ${change.delta > 0 ? '+' : ''}${change.delta.toFixed(2)}`;
-}
-
-function recommendationMarkup(recommendation) {
-  if (!recommendation.found) return `<section class="recommendation"><h3>${text.recommendation}</h3><p>${text.noRecommendation}</p></section>`;
-  const impactMarkup = recommendation.impacts.map((impact) => {
-    const gains = impact.gains.map(impactLabel).join(' · ') || text.none;
-    const losses = impact.losses.map(impactLabel).join(' · ') || text.none;
-    return `<li><strong>${impact.name}</strong><span>${text.gain}: ${gains}</span><span>${text.losses}: ${losses}</span></li>`;
-  }).join('');
-  return `<section class="recommendation"><h3>${text.recommendation}</h3><p><b>${decisionLabel(recommendation.changedDecision.from)}</b> ${text.replace} <b>${decisionLabel(recommendation.changedDecision.to)}</b>. ${text.scoreIncrease}: <b>+${recommendation.scoreDelta.toFixed(5)}</b>; ${text.scenarioCost}: <b>${recommendation.cost}</b> (${recommendation.costDelta >= 0 ? '+' : ''}${recommendation.costDelta}).</p><ul class="recommendation-impacts">${impactMarkup}</ul></section>`;
-}
-
 function localErrors() {
   const errors = [];
   if (draft.length !== 5) errors.push(text.exactFive);
@@ -75,14 +72,15 @@ function renderDraft() {
   document.querySelector('#draft-count').textContent = `${draft.length}/5`;
   document.querySelector('#draft-cost').textContent = cost;
   document.querySelector('#draft-remaining').textContent = 100 - cost;
-  draftList.innerHTML = draft.map((item, index) => `<li class="draft-item"><span><b>${item.measureId}</b> · ${item.districtId ? districtName(item.districtId) : text.wholeCity}</span><button type="button" data-remove="${index}" ${acceptedScenario ? 'disabled' : ''}>${text.remove}</button></li>`).join('');
+  draftList.innerHTML = draft.map((item, index) => `<li class="draft-item"><span><b>${item.measureId}</b> · ${item.districtId ? districtName(item.districtId) : text.wholeCity}</span><button type="button" data-remove="${index}"${acceptedScenario ? ' disabled' : ''}>${text.remove}</button></li>`).join('');
   const errors = localErrors();
   draftMessage.textContent = errors.join(' ');
-  accept.disabled = errors.length > 0 || acceptedScenario;
-  if (acceptedScenario) document.querySelectorAll('[data-add-measure]').forEach((element) => { element.disabled = true; });
+  accept.disabled = acceptedScenario || errors.length > 0;
+  document.querySelectorAll('[data-add-measure]').forEach((button) => { button.disabled = acceptedScenario; });
 }
 
 function addMeasure(button) {
+  if (acceptedScenario) return;
   const measureId = button.dataset.addMeasure;
   const card = button.closest('[data-measure]');
   const select = card.querySelector('[data-district-for]');
@@ -93,23 +91,105 @@ function addMeasure(button) {
   renderDraft();
 }
 
+function analysisMarkup(analysis, error) {
+  const facts = currentAttempt?.result?.facts || [];
+  const factById = new Map(facts.map((fact) => [fact.id, fact]));
+  const sections = (analysis.sections || []).map((section) => `<article class="analysis-section"><h4>${escapeHtml(section.title)}</h4><ul>${(section.conclusions || []).map((conclusion) => `<li>${escapeHtml(conclusion.text)}<details class="analysis-evidence"><summary>${analysisText.evidence}</summary>${conclusion.factIds.map((factId) => { const fact = factById.get(factId); return `<span data-fact-id="${escapeHtml(factId)}">${escapeHtml(fact?.label || factId)}: ${escapeHtml(fact?.value ?? '')} ${escapeHtml(fact?.unit || '')}</span>`; }).join('<br>')}</details></li>`).join('')}</ul></article>`).join('');
+  const statusMessage = error ? `${escapeHtml(error.message)} <button type="button" data-retry-analysis>${analysisText.retry}</button>` : (analysis.kind === 'ai' ? '' : analysisText.pending);
+  return `<section class="analysis-panel" id="ai-analysis"><h3>${escapeHtml(analysis.label)}</h3><p>${statusMessage}</p><div class="analysis-sections">${sections}</div></section>`;
+}
+
+function renderAnalysis(analysis, error = null) {
+  const panel = document.querySelector('#ai-analysis');
+  if (panel) panel.outerHTML = analysisMarkup(analysis, error);
+}
+
 function renderResult(result) {
   const critical = result.criticalIndicators.length ? result.criticalIndicators.map((item) => `${item.districtName}: ${item.indicatorId} = ${item.value.toFixed(2)}`).join(' · ') : text.none;
   resultPanel.hidden = false;
-  resultPanel.innerHTML = `<h3>${text.result}</h3><div class="result-summary"><span>${text.spent} <b>${result.cost}</b></span><span>${text.score} <b>${result.score.toFixed(5)}</b></span><span>${text.increase} <b>${result.scoreDelta.toFixed(5)}</b></span><span>${text.weighted} <b>${result.weightedAverage.toFixed(3)}</b></span></div><p>${text.weakest}: <b>${result.weakestDistrict.name}</b> (${result.weakestDistrict.score.toFixed(3)}). ${text.criticalCount}: <b>${result.criticalCount}</b> — ${critical}.</p><p>${text.synergies}:</p><ul>${result.synergies.length ? result.synergies.map((item) => `<li>${item.title}: ${item.indicatorId} +${item.bonus}</li>`).join('') : `<li>${text.none}</li>`}</ul><div class="result-districts">${result.districts.map((district) => `<div class="result-district"><strong>${district.name}<small>${text.scoreLabel} ${district.score.toFixed(3)}</small></strong><span>${text.q8Indicators}<small>${Object.entries(district.indicators).map(([id, value]) => `${id}: ${value.toFixed(2)}`).join(' · ')}</small></span><span>${text.changes}<small>${Object.entries(district.changes).filter(([, value]) => value !== 0).map(([id, value]) => `${id}: ${value > 0 ? '+' : ''}${value.toFixed(2)}`).join(' · ') || text.noChanges}</small></span></div>`).join('')}</div>${recommendationMarkup(result.recommendation)}`;
+  resultPanel.innerHTML = `<h3>${text.result}</h3><div class="result-summary"><span>${text.spent} <b>${result.cost}</b></span><span>${text.score} <b>${result.score.toFixed(5)}</b></span><span>${text.increase} <b>${result.scoreDelta.toFixed(5)}</b></span><span>${text.weighted} <b>${result.weightedAverage.toFixed(3)}</b></span></div><p>${text.weakest}: <b>${escapeHtml(result.weakestDistrict.name)}</b> (${result.weakestDistrict.score.toFixed(3)}). ${text.criticalCount}: <b>${result.criticalCount}</b> — ${escapeHtml(critical)}.</p><p>${text.synergies}: ${result.synergies.length ? result.synergies.map((item) => `${escapeHtml(item.title)}: ${item.indicatorId} +${item.bonus}`).join(' · ') : text.none}</p><div id="ai-analysis"></div>`;
+  renderAnalysis(result.basicAnalysis);
 }
 
-async function acceptScenario(restoring = false) {
+function isCurrentAnalysisContext(context) {
+  return activeAnalysisContext?.attemptId === context.attemptId && activeAnalysisContext?.locale === context.locale;
+}
+
+async function requestAnalysis(attemptId, requestedLocale = locale) {
+  const context = { attemptId, locale: requestedLocale };
+  activeAnalysisContext = context;
+  const saved = attemptHistory.get(attemptId)?.analyses?.[requestedLocale];
+  if (saved) {
+    if (isCurrentAnalysisContext(context)) renderAnalysis(saved);
+    return saved;
+  }
+  try {
+    const response = await fetch(`/api/attempts/${encodeURIComponent(attemptId)}/analysis`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ locale: requestedLocale }) });
+    const outcome = await response.json();
+    if (outcome.analysis) {
+      if (outcome.status === 'ready') {
+        const savedAttempt = attemptHistory.saveAnalysis(attemptId, requestedLocale, outcome.analysis);
+        if (currentAttempt?.id === attemptId) currentAttempt = savedAttempt;
+        localStorage.setItem('qala-last-attempt', attemptId);
+      }
+      if (currentAttempt?.id === attemptId && isCurrentAnalysisContext(context)) renderAnalysis(outcome.analysis, outcome.status === 'fallback' ? outcome.error : null);
+    }
+    return outcome.analysis;
+  } catch (error) {
+    if (isCurrentAnalysisContext(context) && currentAttempt) renderAnalysis(currentAttempt.result.basicAnalysis, { code: 'network_error', message: error.message || 'AI analysis is unavailable' });
+    return null;
+  }
+}
+
+function renderAttemptHistory() {
+  const attempts = attemptHistory.list();
+  attemptHistoryEmpty.hidden = attempts.length > 0;
+  attemptList.innerHTML = attempts.map((attempt) => `<li class="draft-item"><span><b>${escapeHtml(attempt.id)}</b> · ${attempt.acceptedAt}</span><span class="attempt-actions"><button type="button" data-open-attempt="${escapeHtml(attempt.id)}">${analysisText.open}</button><button type="button" data-copy-attempt="${escapeHtml(attempt.id)}">${analysisText.copy}</button><button type="button" data-compare-attempt="${escapeHtml(attempt.id)}">${analysisText.comparison}</button></span></li>`).join('');
+}
+
+function openAttempt(attemptId) {
+  const attempt = attemptHistory.get(attemptId);
+  if (!attempt) return;
+  currentAttempt = attempt;
+  acceptedScenario = true;
+  activeAnalysisContext = { attemptId, locale };
+  draft.splice(0, draft.length, ...attempt.decisions.map((item) => ({ ...item })));
+  renderDraft();
+  renderResult(attempt.result);
+  const saved = attempt.analyses?.[locale];
+  if (saved) renderAnalysis(saved);
+  else void requestAnalysis(attempt.id);
+}
+
+function copyAttempt(attemptId) {
+  const attempt = attemptHistory.get(attemptId);
+  if (!attempt) return;
+  currentAttempt = null;
+  acceptedScenario = false;
+  draft.splice(0, draft.length, ...attempt.decisions.map((item) => ({ ...item })));
+  renderDraft();
+  draftMessage.textContent = text.draftHelp;
+}
+
+function acceptScenario() {
+  if (acceptedScenario) return;
+  acceptedScenario = true;
   accept.disabled = true;
   draftMessage.textContent = text.calculating;
-  const response = await fetch('/api/scenarios/accept', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decisions: draft, locale }) });
-  const payload = await response.json();
-  if (!response.ok) { draftMessage.textContent = payload.errors.map((item) => item.message).join(' '); renderDraft(); return; }
-  acceptedScenario = true;
-  renderResult(payload.result);
-  renderDraft();
-  draftMessage.textContent = text.accepted;
-  if (!restoring) sessionStorage.removeItem(stateKey);
+  const attemptId = globalThis.crypto?.randomUUID?.() || `attempt-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  fetch('/api/scenarios/accept', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ attemptId, decisions: draft, locale }) })
+    .then(async (response) => ({ response, payload: await response.json() }))
+    .then(({ response, payload }) => {
+      if (!response.ok) { acceptedScenario = false; draftMessage.textContent = payload.errors.map((item) => item.message).join(' '); renderDraft(); return; }
+      currentAttempt = attemptHistory.append(payload);
+      localStorage.setItem('qala-last-attempt', currentAttempt.id);
+      renderResult(currentAttempt.result);
+      renderDraft();
+      draftMessage.textContent = text.accepted;
+      renderAttemptHistory();
+      void requestAnalysis(currentAttempt.id, locale);
+    })
+    .catch((error) => { acceptedScenario = false; draftMessage.textContent = error.message || 'Request failed'; renderDraft(); });
 }
 
 function restoreAfterLocaleSwitch() {
@@ -118,10 +198,8 @@ function restoreAfterLocaleSwitch() {
   sessionStorage.removeItem(stateKey);
   try {
     const state = JSON.parse(saved);
-    draft.push(...state.decisions.map((item) => ({ measureId: item.measureId, districtId: item.districtId ?? null })));
-    acceptedScenario = Boolean(state.accepted);
-    renderDraft();
-    if (acceptedScenario) { acceptedScenario = false; void acceptScenario(true); }
+    if (state.accepted && state.attemptId && attemptHistory.get(state.attemptId)) openAttempt(state.attemptId);
+    else { draft.push(...(state.decisions || []).map((item) => ({ ...item }))); acceptedScenario = false; renderDraft(); }
   } catch { sessionStorage.removeItem(stateKey); }
 }
 
@@ -129,11 +207,19 @@ search.addEventListener('input', filterMeasures);
 scope.addEventListener('change', filterMeasures);
 document.querySelectorAll('[data-add-measure]').forEach((button) => button.addEventListener('click', () => addMeasure(button)));
 draftList.addEventListener('click', (event) => { const button = event.target.closest('[data-remove]'); if (button) { draft.splice(Number(button.dataset.remove), 1); renderDraft(); } });
-accept.addEventListener('click', () => { void acceptScenario(); });
+attemptList.addEventListener('click', (event) => {
+  const open = event.target.closest('[data-open-attempt]');
+  const copy = event.target.closest('[data-copy-attempt]');
+  if (open) openAttempt(open.dataset.openAttempt);
+  if (copy) copyAttempt(copy.dataset.copyAttempt);
+});
+resultPanel.addEventListener('click', (event) => { if (event.target.closest('[data-retry-analysis]') && currentAttempt) void requestAnalysis(currentAttempt.id, locale); });
+accept.addEventListener('click', acceptScenario);
 document.querySelector('#language-switch').addEventListener('click', (event) => {
   event.preventDefault();
-  sessionStorage.setItem(stateKey, JSON.stringify({ decisions: draft, accepted: acceptedScenario }));
+  sessionStorage.setItem(stateKey, JSON.stringify({ decisions: draft, accepted: acceptedScenario, attemptId: currentAttempt?.id || null }));
   window.location.assign(event.currentTarget.href);
 });
 renderDraft();
+renderAttemptHistory();
 restoreAfterLocaleSwitch();

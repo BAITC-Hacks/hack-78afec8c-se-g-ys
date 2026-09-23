@@ -31,3 +31,9 @@ npm test --prefix packages/draft-ui
 Принятие сценария выполняется через `POST /api/scenarios/accept` с JSON-полем `decisions` из пяти решений. Сервер возвращает причины отказа без результата для невалидного набора и детерминированный результат Q8 для принятого сценария.
 
 После принятия браузер сохраняет неизменяемую попытку в `localStorage`. История доступна только в том же браузере: из неё можно открыть результат, создать редактируемую копию с тем же лимитом 100 или сравнить любые две попытки по решениям, расходам, Score и изменениям показателей районов.
+
+## AI analysis
+
+Set `OPENAI_API_KEY` for live explanations. `OPENAI_MODEL` is optional and defaults to `gpt-4o-mini`. Without a key, the accepted numeric result and verified basic analysis remain available.
+
+After acceptance, the browser requests `POST /api/attempts/:attemptId/analysis` for the active language. Successful `ru` and `kk` responses are stored in the same local history record. Requests are deduplicated by `attemptId × locale`, and every AI conclusion must reference a server-calculated fact before it is displayed.
