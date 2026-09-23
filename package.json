@@ -1,0 +1,10 @@
+{
+  "name": "qala-city-catalog",
+  "version": "0.1.0",
+  "private": true,
+  "description": "QALA: исходное состояние города и каталог мероприятий",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  }
+}
