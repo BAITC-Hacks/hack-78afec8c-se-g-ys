@@ -4,6 +4,8 @@ const path = require('node:path');
 const { catalogPayload, localizedDistrictName, normalizeLocale } = require('./src/data');
 const { renderPage } = require('./src/view');
 const { calculateScenario } = require('./src/simulation');
+const { analyzeScenario } = require('./src/ai-analysis');
+const { createOpenAiAnalysisProvider } = require('./src/openai-analysis-provider');
 
 function sendJson(response, status, payload) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -73,7 +75,7 @@ function localizeCalculation(calculation, locale) {
   };
 }
 
-function createServer() {
+function createServer({ analysisProvider = createOpenAiAnalysisProvider() } = {}) {
   return http.createServer(async (request, response) => {
     if (request.method === 'POST' && request.url === '/api/scenarios/accept') {
       try {
@@ -81,6 +83,16 @@ function createServer() {
         const calculation = calculateScenario(body.decisions);
         const localized = localizeCalculation(calculation, normalizeLocale(body.locale));
         return sendJson(response, localized.accepted ? 200 : 400, localized);
+      } catch {
+        return sendJson(response, 400, { accepted: false, errors: [{ code: 'invalid_json', message: 'Request body must be valid JSON' }] });
+      }
+    }
+    if (request.method === 'POST' && request.url === '/api/scenarios/analyze') {
+      try {
+        const body = await readJson(request);
+        const calculation = calculateScenario(body.decisions);
+        if (!calculation.accepted) return sendJson(response, 400, calculation);
+        return sendJson(response, 200, { accepted: true, ...await analyzeScenario(calculation, analysisProvider) });
       } catch {
         return sendJson(response, 400, { accepted: false, errors: [{ code: 'invalid_json', message: 'Request body must be valid JSON' }] });
       }
