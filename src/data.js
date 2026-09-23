@@ -36,24 +36,75 @@ const measures = [
   { id: 'M14', direction: 'Сервисы', name: 'Аварийные бригады ЖКХ + раннее оповещение', scope: 'city', cost: 16, delay: 1, effects: { C1: 5, C2: 2 } },
 ];
 
+const kk = {
+  directions: { 'Транспорт': 'Көлік', 'Экология': 'Экология', 'Соцсфера': 'Әлеуметтік сала', 'Безопасность': 'Қауіпсіздік', 'Сервисы': 'Қызметтер' },
+  indicators: {
+    T1: ['Жол кептелісін азайту', '100 = қарбалас уақытта кептеліс жоқ, 0 = көлік мүлде жүрмейді'],
+    T2: ['Қоғамдық көліктің қолжетімділігі', '100 = барлық тұрғын аялдамадан 500 м жерде, аралығы ≤10 мин'],
+    E1: ['Көгалдандыру', '100 = бір тұрғынға ≥20 м² жасыл аймақ'],
+    E2: ['Ауа сапасы', '100 = қыста AQI ≤50, 0 = тұрақты смог'],
+    S1: ['Мектептер мен балабақшалар', '100 = нормативтік қажеттілік 100% өтелген, екінші ауысым жоқ'],
+    S2: ['Емханалар мен алғашқы медициналық көмек', '100 = тұрғынға шаққандағы норматив толық орындалған'],
+    B1: ['Көше қауіпсіздігі', '100 = барлық жерде жарық пен камера, оқиға ең аз'],
+    B2: ['Жол қозғалысының қауіпсіздігі', '100 = зардап шеккендермен ЖКО ең аз'],
+    C1: ['ТКШ сенімділігі', '100 = жыл бойы жылу/су апаты жоқ'],
+    C2: ['Тұрғындардың өтініштерін шешу жылдамдығы', '100 = барлық өтініш мерзімінде жабылған'],
+  },
+  districts: {
+    esil: ['Есіл', 'Ауқатты аудан, бірақ көпірлерде кептеліс және мектептер толы.'],
+    almaty: ['Алматы', 'Ескі ТКШ және кептелістер.'],
+    saryarka: ['Сарыарқа', 'Жеке сектордың смогы және көгалдандырудың әлсіздігі.'],
+    baikonur: ['Байқоңыр', 'Айқын теңгерімсіздігі жоқ орташа аудан.'],
+    nura: ['Нұра', 'Әлеуметтік сала мен көліктегі басты әлсіз аудан.'],
+  },
+  measures: {
+    M1: 'Автобустарға арналған бөлінген жолақтар', M2: 'Ақылды бағдаршамдар (бейімделмелі басқару)',
+    M3: 'LRT желісі / кеңейту', M4: 'Парк / сквер', M5: 'Жеке секторды таза отынға көшіру',
+    M6: 'Қаланы көгалдандыру және желден қорғайтын белдеулер бағдарламасы', M7: 'Мектеп + балабақша (модульдік құрылыс)',
+    M8: 'Отбасылық денсаулық орталығы / емхана', M9: 'Аула спорт-хабтары',
+    M10: 'Жарықтандыру және камералар (Safe City кеңейту)', M11: 'Қауіпсіз өткелдер мен мектеп аймақтары',
+    M12: 'Өтініштердің бірыңғай цифрлық платформасы', M13: 'Жылу және су желілерін жаңғырту',
+    M14: 'ТКШ апаттық бригадалары + ерте ескерту',
+  },
+};
+
+function normalizeLocale(locale) {
+  return locale === 'kk' ? 'kk' : 'ru';
+}
+
+function localizedDistrictName(id, locale) {
+  return normalizeLocale(locale) === 'kk' ? kk.districts[id][0] : districts.find((district) => district.id === id).name;
+}
+
+function localizedCatalog(locale) {
+  if (normalizeLocale(locale) === 'ru') return { indicators, districts, measures };
+  return {
+    indicators: indicators.map((indicator) => ({ ...indicator, direction: kk.directions[indicator.direction], name: kk.indicators[indicator.id][0], description: kk.indicators[indicator.id][1] })),
+    districts: districts.map((district) => ({ ...district, name: kk.districts[district.id][0], profile: kk.districts[district.id][1] })),
+    measures: measures.map((measure) => ({ ...measure, direction: kk.directions[measure.direction], name: kk.measures[measure.id] })),
+  };
+}
+
 function indicatorStatus(value) {
   if (value < 40) return 'critical';
   if (value < 55) return 'weak';
   return 'stable';
 }
 
-function catalogPayload() {
+function catalogPayload(locale = 'ru') {
+  const selectedLocale = normalizeLocale(locale);
+  const catalog = localizedCatalog(selectedLocale);
   return {
-    locale: 'ru',
+    locale: selectedLocale,
     budget: 100,
     horizonQuarters: 8,
-    indicators,
-    districts: districts.map((district) => ({
+    indicators: catalog.indicators,
+    districts: catalog.districts.map((district) => ({
       ...district,
       indicatorStatus: Object.fromEntries(Object.entries(district.indicators).map(([id, value]) => [id, indicatorStatus(value)])),
     })),
-    measures,
+    measures: catalog.measures,
   };
 }
 
-module.exports = { indicators, districts, measures, catalogPayload, indicatorStatus };
+module.exports = { indicators, districts, measures, catalogPayload, indicatorStatus, localizedDistrictName, normalizeLocale };
