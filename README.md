@@ -1,2 +1,18 @@
 # hack-78afec8c-se-g-ys
 Hackathon team repository for SE G_YS
+
+## Локальный запуск
+
+Первый пользовательский путь issue #2 показывает исходные данные пяти районов и каталог 14 мероприятий на русском языке.
+
+```bash
+npm start
+```
+
+Откройте `http://localhost:3000`. Проверка:
+
+```bash
+npm test
+```
+
+Каталог также доступен через `GET /api/catalog`.
