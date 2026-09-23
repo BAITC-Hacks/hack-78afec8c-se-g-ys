@@ -8,6 +8,8 @@ const draftMessage = document.querySelector('#draft-message');
 const accept = document.querySelector('#accept-scenario');
 const resultPanel = document.querySelector('#result-panel');
 const acceptedResultStorageKey = 'qala.accepted-result.v1';
+let acceptedDecisions = null;
+let analysisPending = false;
 
 function filterMeasures() {
   const query = search.value.trim().toLowerCase();
@@ -61,12 +63,18 @@ function evidenceMarkup(factIds, factsById) {
   return `<details class="analysis-evidence"><summary>Показать расчётные факты (${facts.length})</summary><ul>${facts.map((fact) => `<li data-fact-id="${escapeHtml(fact.id)}"><span>${escapeHtml(fact.label)}</span><b>${factValue(fact)}</b></li>`).join('')}</ul></details>`;
 }
 
-function basicAnalysisMarkup(analysis, facts) {
+function analysisMarkup(analysis, facts, { retry = false } = {}) {
   const factsById = new Map(facts.map((fact) => [fact.id, fact]));
-  return `<section class="basic-analysis"><p class="analysis-label">${escapeHtml(analysis.label)} · доступен сразу после расчёта; не является прогнозом городских происшествий.</p>${analysis.sections.map((section) => `<section class="analysis-section"><h3>${escapeHtml(section.title)}</h3>${section.conclusions.map((conclusion) => `<article class="analysis-conclusion"><p>${escapeHtml(conclusion.text)}</p>${evidenceMarkup(conclusion.factIds, factsById)}</article>`).join('')}</section>`).join('')}</section>`;
+  const isBasic = analysis.kind === 'basic';
+  const label = isBasic
+    ? `${analysis.label} · доступен сразу после расчёта; не является прогнозом городских происшествий.`
+    : `${analysis.label} · текст проверен сервером по расчётным фактам.`;
+  const retryButton = retry ? `<button type="button" id="retry-ai-analysis" ${analysisPending || !acceptedDecisions ? 'disabled' : ''}>${analysisPending ? 'Запрашиваем AI-разбор…' : 'Повторить AI-разбор'}</button>` : '';
+  return `<section class="${isBasic ? 'basic-analysis' : 'ai-analysis'}"><p class="analysis-label">${escapeHtml(label)}</p>${analysis.sections.map((section) => `<section class="analysis-section"><h3>${escapeHtml(section.title)}</h3>${section.conclusions.map((conclusion) => `<article class="analysis-conclusion"><p>${escapeHtml(conclusion.text)}</p>${evidenceMarkup(conclusion.factIds, factsById)}</article>`).join('')}</section>`).join('')}${retryButton}</section>`;
 }
 
 function saveAcceptedResult(decisions, result) {
+  acceptedDecisions = decisions;
   try {
     localStorage.setItem(acceptedResultStorageKey, JSON.stringify({ decisions, result }));
   } catch {
@@ -74,10 +82,10 @@ function saveAcceptedResult(decisions, result) {
   }
 }
 
-function savedAcceptedResult() {
+function savedAcceptedAttempt() {
   try {
     const saved = JSON.parse(localStorage.getItem(acceptedResultStorageKey));
-    return saved?.result?.basicAnalysis && saved?.result?.facts ? saved.result : null;
+    return saved?.result?.basicAnalysis && saved?.result?.facts && Array.isArray(saved.decisions) ? saved : null;
   } catch {
     return null;
   }
@@ -86,10 +94,30 @@ function savedAcceptedResult() {
 function renderAcceptedResult(result) {
   const critical = result.criticalIndicators.length ? result.criticalIndicators.map((item) => `${item.districtName}: ${item.indicatorId} = ${item.value.toFixed(2)}`).join(' · ') : 'Нет';
   resultPanel.hidden = false;
-  resultPanel.innerHTML = `<h3>Результат на конец Q8</h3><div class="result-summary"><span>Расход <b>${result.cost}</b></span><span>Astana Quality of Life Score <b>${result.score.toFixed(5)}</b></span><span>Прирост <b>${result.scoreDelta.toFixed(5)}</b></span><span>Средневзвешенный результат <b>${result.weightedAverage.toFixed(3)}</b></span></div><p>Самый слабый район: <b>${result.weakestDistrict.name}</b> (${result.weakestDistrict.score.toFixed(3)}). Критических показателей: <b>${result.criticalCount}</b> — ${critical}.</p><p>Активированные синергии:</p><ul>${result.synergies.length ? result.synergies.map((item) => `<li>${item.title}: ${item.indicatorId} +${item.bonus}</li>`).join('') : '<li>Нет</li>'}</ul><div class="result-districts">${result.districts.map((district) => `<div class="result-district"><strong>${district.name}<small>Оценка ${district.score.toFixed(3)}</small></strong><span>Показатели Q8<small>${Object.entries(district.indicators).map(([id, value]) => `${id}: ${value.toFixed(2)}`).join(' · ')}</small></span><span>Изменения<small>${Object.entries(district.changes).filter(([, value]) => value !== 0).map(([id, value]) => `${id}: ${value > 0 ? '+' : ''}${value.toFixed(2)}`).join(' · ') || 'Нет изменений'}</small></span></div>`).join('')}</div>${basicAnalysisMarkup(result.basicAnalysis, result.facts)}${recommendationMarkup(result.recommendation)}`;
+  const aiAnalysis = result.aiAnalysis ? analysisMarkup(result.aiAnalysis, result.facts) : '';
+  resultPanel.innerHTML = `<h3>Результат на конец Q8</h3><div class="result-summary"><span>Расход <b>${result.cost}</b></span><span>Astana Quality of Life Score <b>${result.score.toFixed(5)}</b></span><span>Прирост <b>${result.scoreDelta.toFixed(5)}</b></span><span>Средневзвешенный результат <b>${result.weightedAverage.toFixed(3)}</b></span></div><p>Самый слабый район: <b>${result.weakestDistrict.name}</b> (${result.weakestDistrict.score.toFixed(3)}). Критических показателей: <b>${result.criticalCount}</b> — ${critical}.</p><p>Активированные синергии:</p><ul>${result.synergies.length ? result.synergies.map((item) => `<li>${item.title}: ${item.indicatorId} +${item.bonus}</li>`).join('') : '<li>Нет</li>'}</ul><div class="result-districts">${result.districts.map((district) => `<div class="result-district"><strong>${district.name}<small>Оценка ${district.score.toFixed(3)}</small></strong><span>Показатели Q8<small>${Object.entries(district.indicators).map(([id, value]) => `${id}: ${value.toFixed(2)}`).join(' · ')}</small></span><span>Изменения<small>${Object.entries(district.changes).filter(([, value]) => value !== 0).map(([id, value]) => `${id}: ${value > 0 ? '+' : ''}${value.toFixed(2)}`).join(' · ') || 'Нет изменений'}</small></span></div>`).join('')}</div>${aiAnalysis}${analysisMarkup(result.basicAnalysis, result.facts, { retry: true })}${recommendationMarkup(result.recommendation)}`;
   document.querySelectorAll('[data-add-measure], [data-remove]').forEach((element) => { element.disabled = true; });
   accept.disabled = true;
   draftMessage.textContent = 'Попытка принята и больше не изменяется.';
+  document.querySelector('#retry-ai-analysis')?.addEventListener('click', () => requestAiAnalysis(acceptedDecisions, result));
+}
+
+async function requestAiAnalysis(decisions, result) {
+  if (analysisPending || !Array.isArray(decisions)) return;
+  analysisPending = true;
+  renderAcceptedResult(result);
+  try {
+    const response = await fetch('/api/scenarios/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decisions }) });
+    const payload = await response.json();
+    if (response.ok && payload.accepted && payload.source === 'ai') result.aiAnalysis = payload.analysis;
+    if (response.ok && payload.accepted && payload.source === 'basic') delete result.aiAnalysis;
+  } catch {
+    delete result.aiAnalysis;
+  } finally {
+    analysisPending = false;
+    saveAcceptedResult(decisions, result);
+    renderAcceptedResult(result);
+  }
 }
 
 function localErrors() {
@@ -152,6 +180,7 @@ async function acceptScenario() {
   }
   saveAcceptedResult(payload.decisions, payload.result);
   renderAcceptedResult(payload.result);
+  requestAiAnalysis(payload.decisions, payload.result);
 }
 
 search.addEventListener('input', filterMeasures);
@@ -160,5 +189,8 @@ document.querySelectorAll('[data-add-measure]').forEach((button) => button.addEv
 draftList.addEventListener('click', (event) => { const button = event.target.closest('[data-remove]'); if (button) { draft.splice(Number(button.dataset.remove), 1); renderDraft(); } });
 accept.addEventListener('click', acceptScenario);
 renderDraft();
-const savedResult = savedAcceptedResult();
-if (savedResult) renderAcceptedResult(savedResult);
+const savedAttempt = savedAcceptedAttempt();
+if (savedAttempt) {
+  acceptedDecisions = savedAttempt.decisions;
+  renderAcceptedResult(savedAttempt.result);
+}

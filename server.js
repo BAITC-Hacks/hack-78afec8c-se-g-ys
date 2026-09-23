@@ -4,6 +4,8 @@ const path = require('node:path');
 const { catalogPayload } = require('./src/data');
 const { renderPage } = require('./src/view');
 const { calculateScenario } = require('./src/simulation');
+const { analyzeScenario } = require('./src/ai-analysis');
+const { createOpenAiAnalysisProvider } = require('./src/openai-analysis-provider');
 
 function sendJson(response, status, payload) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -22,13 +24,23 @@ function readJson(request) {
   });
 }
 
-function createServer() {
+function createServer({ analysisProvider = createOpenAiAnalysisProvider() } = {}) {
   return http.createServer(async (request, response) => {
     if (request.method === 'POST' && request.url === '/api/scenarios/accept') {
       try {
         const body = await readJson(request);
         const calculation = calculateScenario(body.decisions);
         return sendJson(response, calculation.accepted ? 200 : 400, calculation);
+      } catch {
+        return sendJson(response, 400, { accepted: false, errors: [{ code: 'invalid_json', message: 'Request body must be valid JSON' }] });
+      }
+    }
+    if (request.method === 'POST' && request.url === '/api/scenarios/analyze') {
+      try {
+        const body = await readJson(request);
+        const calculation = calculateScenario(body.decisions);
+        if (!calculation.accepted) return sendJson(response, 400, calculation);
+        return sendJson(response, 200, { accepted: true, ...await analyzeScenario(calculation, analysisProvider) });
       } catch {
         return sendJson(response, 400, { accepted: false, errors: [{ code: 'invalid_json', message: 'Request body must be valid JSON' }] });
       }
