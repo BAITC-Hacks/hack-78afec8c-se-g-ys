@@ -1,0 +1,11 @@
+.git
+.agents
+.playwright-mcp
+.worktrees
+.env
+node_modules
+packages
+test
+docs
+*.md
+*.jpg
