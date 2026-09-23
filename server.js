@@ -37,6 +37,10 @@ function createServer() {
       response.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8' });
       return response.end(fs.readFileSync(path.join(__dirname, 'public', 'client.js')));
     }
+    if (request.method === 'GET' && request.url === '/history.js') {
+      response.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8' });
+      return response.end(fs.readFileSync(path.join(__dirname, 'public', 'history.js')));
+    }
     if (request.method !== 'GET') return sendJson(response, 405, { error: 'Method not allowed' });
     if (request.url === '/') {
       response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
