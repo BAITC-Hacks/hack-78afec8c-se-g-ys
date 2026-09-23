@@ -199,7 +199,7 @@ function findRecommendation(decisions, baseValidation, baseState) {
     return {
       found: false,
       reason: 'no_positive_single_replacement',
-      message: 'No single replacement improves Score; this is not a claim of a global optimum.',
+      message: 'Ни одна точечная замена не даёт строго положительного прироста Score; это не означает достижения глобального максимума.',
       scoreDelta: 0,
       impacts: [],
     };
