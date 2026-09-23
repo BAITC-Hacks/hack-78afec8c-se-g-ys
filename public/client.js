@@ -303,6 +303,12 @@ function addMeasure(button) {
 
 async function acceptScenario(restoring = false) {
   if (draftAccepted && !restoring) return;
+  if (localErrors().length > 0) {
+    resultPanel.hidden = true;
+    resultPanel.innerHTML = '';
+    renderDraft();
+    return;
+  }
   accept.disabled = true;
   draftMessage.textContent = text.calculating;
   const response = await fetch('/api/scenarios/accept', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decisions: draft, locale }) });
