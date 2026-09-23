@@ -2,6 +2,8 @@ const { districts, indicators, measures } = require('./data');
 
 const BUDGET = 100;
 const HORIZON_QUARTERS = 8;
+const CATALOG_VERSION = 'qala-catalog-v1';
+const MODEL_VERSION = 'qala-score-q8-v1';
 const weights = { T1: 0.10, T2: 0.10, E1: 0.09, E2: 0.11, S1: 0.11, S2: 0.11, B1: 0.09, B2: 0.09, C1: 0.10, C2: 0.10 };
 const districtById = new Map(districts.map((district) => [district.id, district]));
 const measureById = new Map(measures.map((measure) => [measure.id, measure]));
@@ -381,4 +383,59 @@ function calculateScenario(decisions) {
   };
 }
 
-module.exports = { BUDGET, HORIZON_QUARTERS, validateScenario, calculateScenario, findRecommendation };
+function factorial(value) {
+  let total = 1;
+  for (let factor = 2; factor <= value; factor += 1) total *= factor;
+  return total;
+}
+
+function calculateImpactBreakdown(acceptedScenario) {
+  if (!acceptedScenario?.accepted || !Array.isArray(acceptedScenario.decisions) || acceptedScenario.decisions.length !== 5) {
+    throw new TypeError('Impact Breakdown requires one accepted five-decision scenario');
+  }
+
+  const decisions = canonicalDecisions(acceptedScenario.decisions);
+  const count = decisions.length;
+  const subsetUtilities = Array.from({ length: 2 ** count }, (_, mask) => ({
+    mask,
+    utility: calculateState(decisions.filter((_, index) => mask & (1 << index))).score,
+  }));
+  const utilityForMask = new Map(subsetUtilities.map((item) => [item.mask, item.utility]));
+  const contributions = decisions.map((decision, index) => {
+    let value = 0;
+    for (let mask = 0; mask < 2 ** count; mask += 1) {
+      if (mask & (1 << index)) continue;
+      const subsetSize = decisions.reduce((size, _, bit) => size + Number(Boolean(mask & (1 << bit))), 0);
+      const weight = factorial(subsetSize) * factorial(count - subsetSize - 1) / factorial(count);
+      value += weight * (utilityForMask.get(mask | (1 << index)) - utilityForMask.get(mask));
+    }
+    return { decision, value, displayValue: Number(value.toFixed(5)) };
+  });
+  const baselineUtility = utilityForMask.get(0);
+  const fullUtility = utilityForMask.get((2 ** count) - 1);
+  const contributionTotal = contributions.reduce((sum, contribution) => sum + contribution.value, 0);
+  const displayTotal = contributions.reduce((sum, contribution) => sum + contribution.displayValue, 0);
+  const difference = fullUtility - baselineUtility;
+
+  return {
+    status: 'ready',
+    catalogVersion: CATALOG_VERSION,
+    modelVersion: MODEL_VERSION,
+    baselineUtility,
+    fullUtility,
+    contributions,
+    reconciliation: {
+      difference,
+      contributionTotal,
+      residual: difference - contributionTotal,
+      displayTotal,
+      displayResidual: Number((difference - displayTotal).toFixed(5)),
+    },
+    subsetUtilities,
+  };
+}
+
+module.exports = {
+  BUDGET, HORIZON_QUARTERS, CATALOG_VERSION, MODEL_VERSION,
+  validateScenario, calculateScenario, calculateImpactBreakdown, findRecommendation,
+};

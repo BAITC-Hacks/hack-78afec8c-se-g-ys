@@ -117,6 +117,25 @@
         storage.setItem(STORAGE_KEY, JSON.stringify(attempts));
         return immutableCopy(attempts[index]);
       },
+      saveImpactBreakdown(attemptId, breakdown) {
+        if (!breakdown || breakdown.status !== 'ready' || !breakdown.catalogVersion || !breakdown.modelVersion) {
+          throw new TypeError('A completed versioned Impact Breakdown is required');
+        }
+        const attempts = read();
+        const index = attempts.findIndex((attempt) => attempt.id === attemptId);
+        if (index < 0) throw new Error('Accepted attempt not found');
+        const { subsetUtilities, ...participantBreakdown } = breakdown;
+        attempts[index] = { ...attempts[index], impactBreakdown: participantBreakdown };
+        storage.setItem(STORAGE_KEY, JSON.stringify(attempts));
+        return immutableCopy(attempts[index]);
+      },
+      getImpactBreakdown(attemptId, { catalogVersion, modelVersion } = {}) {
+        const breakdown = read().find((attempt) => attempt.id === attemptId)?.impactBreakdown;
+        if (!breakdown) return null;
+        if ((catalogVersion && breakdown.catalogVersion !== catalogVersion)
+          || (modelVersion && breakdown.modelVersion !== modelVersion)) return null;
+        return immutableCopy(breakdown);
+      },
       getGlobalComparison(attemptId, { catalogVersion, modelVersion } = {}) {
         const comparison = read().find((attempt) => attempt.id === attemptId)?.globalComparison;
         if (!comparison) return null;

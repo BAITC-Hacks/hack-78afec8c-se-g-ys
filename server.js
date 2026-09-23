@@ -4,7 +4,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { catalogPayload, localizedDistrictName, normalizeLocale } = require('./src/data');
 const { renderPage } = require('./src/view');
-const { calculateScenario } = require('./src/simulation');
+const { calculateScenario, calculateImpactBreakdown } = require('./src/simulation');
 const { analyzeScenario } = require('./src/ai-analysis');
 const { createOpenAiAnalysisProvider } = require('./src/openai-analysis-provider');
 const { createAiAnalysisService } = require('./src/ai-analysis');
@@ -112,7 +112,39 @@ function localizeCalculation(calculation, locale) {
   };
 }
 
-function createServer({ analysisProvider = createOpenAiAnalysisProvider(), aiProvider, aiService } = {}) {
+function participantImpactBreakdown(breakdown, locale) {
+  const catalog = catalogPayload(locale);
+  const measuresById = new Map(catalog.measures.map((measure) => [measure.id, measure]));
+  const districtsById = new Map(catalog.districts.map((district) => [district.id, district]));
+  const copy = {
+    status: breakdown.status,
+    catalogVersion: breakdown.catalogVersion,
+    modelVersion: breakdown.modelVersion,
+    baselineUtility: breakdown.baselineUtility,
+    fullUtility: breakdown.fullUtility,
+    reconciliation: breakdown.reconciliation,
+    evidenceFactIds: ['scenario.score', 'scenario.score_delta'],
+    interpretation: locale === 'kk'
+      ? 'Шепли мәні — барлық ықтимал шешім реттеріндегі осы шешім үлесінің орташа есебі; бұл жеке дара әсер не кепілденген пайда емес.'
+      : 'Значение Шепли — средняя доля этого решения по всем возможным порядкам решений; это не изолированный эффект и не гарантированная польза.',
+    contributions: breakdown.contributions.map((contribution) => {
+      const measure = measuresById.get(contribution.decision.measureId);
+      const district = contribution.decision.districtId ? districtsById.get(contribution.decision.districtId) : null;
+      return {
+        decision: {
+          measureId: contribution.decision.measureId,
+          districtId: contribution.decision.districtId,
+          label: `${measure.id} · ${measure.name}${district ? ` · ${district.name}` : locale === 'kk' ? ' · бүкіл қала' : ' · весь город'}`,
+        },
+        value: contribution.value,
+        displayValue: contribution.displayValue,
+      };
+    }),
+  };
+  return copy;
+}
+
+function createServer({ analysisProvider = createOpenAiAnalysisProvider(), aiProvider, aiService, impactBreakdownCalculator = calculateImpactBreakdown } = {}) {
   const cachedProvider = aiProvider || (analysisProvider?.analyze ? async ({ locale, result }) => {
     const outcome = await analyzeScenario({ result }, analysisProvider);
     if (outcome.source !== 'ai') throw new Error('AI analysis is unavailable');
@@ -181,6 +213,21 @@ function createServer({ analysisProvider = createOpenAiAnalysisProvider(), aiPro
         return sendJson(response, 200, { attemptId, locale, ...outcome });
       } catch {
         return sendJson(response, 400, { error: 'invalid_json' });
+      }
+    }
+    const impactBreakdownMatch = url.pathname.match(/^\/api\/attempts\/([^/]+)\/impact-breakdown$/);
+    if (request.method === 'POST' && impactBreakdownMatch) {
+      try {
+        const body = await readJson(request);
+        const attemptId = decodeURIComponent(impactBreakdownMatch[1]);
+        const context = attempts.get(attemptId);
+        if (!context) return sendJson(response, 404, { error: 'Attempt not found' });
+        const locale = normalizeLocale(body.locale);
+        const breakdown = context.impactBreakdown || impactBreakdownCalculator(context.calculation);
+        context.impactBreakdown = breakdown;
+        return sendJson(response, 200, { attemptId, locale, status: 'ready', breakdown: participantImpactBreakdown(breakdown, locale) });
+      } catch {
+        return sendJson(response, 503, { status: 'unavailable', error: { code: 'impact_breakdown_unavailable' } });
       }
     }
     if (request.method === 'GET' && url.pathname === '/client.js') {

@@ -12,6 +12,8 @@ const draftMessage = document.querySelector('#draft-message');
 const accept = document.querySelector('#accept-scenario');
 const resultPanel = document.querySelector('#result-panel');
 const BUDGET = 100;
+const CATALOG_VERSION = 'qala-catalog-v1';
+const MODEL_VERSION = 'qala-score-q8-v1';
 const acceptedResultStorageKey = 'qala.accepted-result.v1';
 const attemptList = document.querySelector('#attempt-list');
 const attemptHistoryEmpty = document.querySelector('#attempt-history-empty');
@@ -21,6 +23,15 @@ const selectedAttemptIds = new Set();
 let draftAccepted = false;
 let acceptedDecisions = null;
 let analysisPending = false;
+let currentAttemptId = null;
+let currentImpactBreakdown = null;
+let impactBreakdownUnavailable = false;
+let impactBreakdownPending = false;
+let currentResult = null;
+
+const impactText = locale === 'kk'
+  ? { title: 'Әсерді бөлу', waiting: 'Әсерді бөлуді есептеу', unavailable: 'Әсерді бөлу әзірге қолжетімсіз.', retry: 'Қайта есептеу', total: 'Үлестер қосындысы', difference: 'Толық сценарий мен бастапқы жағдай айырмасы', residual: 'Дөңгелектеуден кейінгі қалдық', evidence: 'Есептеу негізі' }
+  : { title: 'Разложение влияния', waiting: 'Рассчитать разложение влияния', unavailable: 'Разложение влияния пока недоступно.', retry: 'Повторить расчёт', total: 'Сумма вкладов', difference: 'Разница полного сценария и базового состояния', residual: 'Остаток после отображаемого округления', evidence: 'Основание расчёта' };
 
 function filterMeasures() {
   const query = search.value.trim().toLowerCase();
@@ -77,6 +88,16 @@ function analysisMarkup(analysis, facts, { retry = false } = {}) {
   return `<section class="${isBasic ? 'basic-analysis' : 'ai-analysis'}"><p class="analysis-label">${escapeHtml(label)}</p>${analysis.sections.map((section) => `<section class="analysis-section"><h3>${escapeHtml(section.title)}</h3>${section.conclusions.map((conclusion) => `<article class="analysis-conclusion"><p>${escapeHtml(conclusion.text)}</p>${evidenceMarkup(conclusion.factIds, factsById)}</article>`).join('')}</section>`).join('')}${retryButton}</section>`;
 }
 
+function impactBreakdownMarkup(result) {
+  const button = `<button type="button" id="retry-impact-breakdown" ${!currentAttemptId || impactBreakdownPending ? 'disabled' : ''}>${impactBreakdownPending ? impactText.waiting : currentImpactBreakdown ? impactText.retry : impactText.waiting}</button>`;
+  if (!currentImpactBreakdown) {
+    return `<section class="impact-breakdown" aria-labelledby="impact-breakdown-title"><h3 id="impact-breakdown-title">${impactText.title}</h3><p>${impactBreakdownUnavailable ? impactText.unavailable : impactText.waiting}</p>${button}</section>`;
+  }
+  const { contributions, reconciliation } = currentImpactBreakdown;
+  const factsById = new Map((result.facts || []).map((fact) => [fact.id, fact]));
+  return `<section class="impact-breakdown" aria-labelledby="impact-breakdown-title"><h3 id="impact-breakdown-title">${impactText.title}</h3><p>${escapeHtml(currentImpactBreakdown.interpretation)}</p><ul>${contributions.map((contribution) => `<li data-decision="${escapeHtml(contribution.decision.measureId)}"><b>${escapeHtml(contribution.decision.label)}</b>: ${contribution.displayValue >= 0 ? '+' : ''}${contribution.displayValue.toFixed(5)}</li>`).join('')}</ul><dl><div><dt>${impactText.total}</dt><dd>${reconciliation.displayTotal.toFixed(5)}</dd></div><div><dt>${impactText.difference}</dt><dd>${reconciliation.difference.toFixed(5)}</dd></div><div><dt>${impactText.residual}</dt><dd>${reconciliation.displayResidual >= 0 ? '+' : ''}${reconciliation.displayResidual.toFixed(5)}</dd></div></dl><details><summary>${impactText.evidence}</summary><p>${locale === 'kk' ? 'Барлық 32 ішкі жиын тек маржиналдық үлестерді есептеуге қолданылды; толық емес жиындар сценарий немесе Score ретінде көрсетілмейді.' : 'Все 32 внутренних подмножества использованы только для расчёта маржинальных вкладов; неполные наборы не показаны как сценарии или Score.'}</p>${evidenceMarkup(currentImpactBreakdown.evidenceFactIds, factsById)}</details>${button}</section>`;
+}
+
 function saveAcceptedResult(decisions, result) {
   acceptedDecisions = decisions;
   try {
@@ -99,13 +120,15 @@ function resultMarkup(result) {
   const critical = result.criticalIndicators.length ? result.criticalIndicators.map((item) => `${item.districtName}: ${item.indicatorId} = ${item.value.toFixed(2)}`).join(' · ') : text.none;
   const aiAnalysis = result.aiAnalysis && result.facts ? analysisMarkup(result.aiAnalysis, result.facts) : '';
   const basicAnalysis = result.basicAnalysis && result.facts ? analysisMarkup(result.basicAnalysis, result.facts, { retry: true }) : '';
-  return `<h3>${text.result}</h3><div class="result-summary"><span>${text.spent} <b>${result.cost}</b></span><span>${text.score} <b>${result.score.toFixed(5)}</b></span><span>${text.increase} <b>${result.scoreDelta.toFixed(5)}</b></span><span>${text.weighted} <b>${result.weightedAverage.toFixed(3)}</b></span></div><p>${text.weakest}: <b>${result.weakestDistrict.name}</b> (${result.weakestDistrict.score.toFixed(3)}). ${text.criticalCount}: <b>${result.criticalCount}</b> — ${critical}.</p><p>${text.synergies}:</p><ul>${result.synergies.length ? result.synergies.map((item) => `<li>${item.title}: ${item.indicatorId} +${item.bonus}</li>`).join('') : `<li>${text.none}</li>`}</ul><div class="result-districts">${result.districts.map((district) => `<div class="result-district"><strong>${district.name}<small>${text.scoreLabel} ${district.score.toFixed(3)}</small></strong><span>${text.q8Indicators}<small>${Object.entries(district.indicators).map(([id, value]) => `${id}: ${value.toFixed(2)}`).join(' · ')}</small></span><span>${text.changes}<small>${Object.entries(district.changes).filter(([, value]) => value !== 0).map(([id, value]) => `${id}: ${value > 0 ? '+' : ''}${value.toFixed(2)}`).join(' · ') || text.noChanges}</small></span></div>`).join('')}</div>${aiAnalysis}${basicAnalysis}${recommendationMarkup(result.recommendation)}`;
+  return `<h3>${text.result}</h3><div class="result-summary"><span>${text.spent} <b>${result.cost}</b></span><span>${text.score} <b>${result.score.toFixed(5)}</b></span><span>${text.increase} <b>${result.scoreDelta.toFixed(5)}</b></span><span>${text.weighted} <b>${result.weightedAverage.toFixed(3)}</b></span></div><p>${text.weakest}: <b>${result.weakestDistrict.name}</b> (${result.weakestDistrict.score.toFixed(3)}). ${text.criticalCount}: <b>${result.criticalCount}</b> — ${critical}.</p><p>${text.synergies}:</p><ul>${result.synergies.length ? result.synergies.map((item) => `<li>${item.title}: ${item.indicatorId} +${item.bonus}</li>`).join('') : `<li>${text.none}</li>`}</ul><div class="result-districts">${result.districts.map((district) => `<div class="result-district"><strong>${district.name}<small>${text.scoreLabel} ${district.score.toFixed(3)}</small></strong><span>${text.q8Indicators}<small>${Object.entries(district.indicators).map(([id, value]) => `${id}: ${value.toFixed(2)}`).join(' · ')}</small></span><span>${text.changes}<small>${Object.entries(district.changes).filter(([, value]) => value !== 0).map(([id, value]) => `${id}: ${value > 0 ? '+' : ''}${value.toFixed(2)}`).join(' · ') || text.noChanges}</small></span></div>`).join('')}</div>${impactBreakdownMarkup(result)}${aiAnalysis}${basicAnalysis}${recommendationMarkup(result.recommendation)}`;
 }
 
 function showResult(result) {
+  currentResult = result;
   resultPanel.hidden = false;
   resultPanel.innerHTML = resultMarkup(result);
   document.querySelector('#retry-ai-analysis')?.addEventListener('click', () => requestAiAnalysis(acceptedDecisions, result));
+  document.querySelector('#retry-impact-breakdown')?.addEventListener('click', () => { void requestImpactBreakdown(); });
 }
 
 function renderAcceptedResult(result) {
@@ -130,6 +153,28 @@ async function requestAiAnalysis(decisions, result) {
     analysisPending = false;
     saveAcceptedResult(decisions, result);
     renderAcceptedResult(result);
+  }
+}
+
+async function requestImpactBreakdown() {
+  if (!currentAttemptId || impactBreakdownPending) return;
+  impactBreakdownPending = true;
+  impactBreakdownUnavailable = false;
+  if (currentResult) showResult(currentResult);
+  try {
+    const response = await fetch(`/api/attempts/${encodeURIComponent(currentAttemptId)}/impact-breakdown`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ locale }) });
+    const payload = await response.json();
+    if (response.ok && payload.status === 'ready' && payload.breakdown) {
+      currentImpactBreakdown = payload.breakdown;
+      attemptHistory.saveImpactBreakdown(currentAttemptId, payload.breakdown);
+    } else {
+      impactBreakdownUnavailable = true;
+    }
+  } catch {
+    impactBreakdownUnavailable = true;
+  } finally {
+    impactBreakdownPending = false;
+    if (currentResult) showResult(currentResult);
   }
 }
 
@@ -212,6 +257,9 @@ async function acceptScenario(restoring = false) {
   const response = await fetch('/api/scenarios/accept', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decisions: draft, locale }) });
   const payload = await response.json();
   if (!response.ok) { draftMessage.textContent = payload.errors.map((item) => item.message).join(' '); renderDraft(); return; }
+  currentAttemptId = payload.attemptId;
+  currentImpactBreakdown = null;
+  impactBreakdownUnavailable = false;
   saveAcceptedResult(payload.decisions, payload.result);
   renderAcceptedResult(payload.result);
   requestAiAnalysis(payload.decisions, payload.result);
@@ -224,6 +272,7 @@ async function acceptScenario(restoring = false) {
       draftMessage.textContent = text.accepted;
     }
   }
+  void requestImpactBreakdown();
 /* Superseded Issue 10 client flow; the server-side cached bilingual API remains available.
   draft.push({ measureId, districtId });
   renderDraft();
@@ -353,7 +402,7 @@ search.addEventListener('input', filterMeasures);
 scope.addEventListener('change', filterMeasures);
 document.querySelectorAll('[data-add-measure]').forEach((button) => button.addEventListener('click', () => addMeasure(button)));
 draftList.addEventListener('click', (event) => { const button = event.target.closest('[data-remove]'); if (button && !draftAccepted) { draft.splice(Number(button.dataset.remove), 1); renderDraft(); } });
-attemptList.addEventListener('click', (event) => { const open = event.target.closest('[data-open-attempt]'); const copy = event.target.closest('[data-copy-attempt]'); if (!open && !copy) return; const attempt = attemptHistory.list()[Number((open ?? copy).dataset.openAttempt ?? (open ?? copy).dataset.copyAttempt)]; if (!attempt) return; if (open) { acceptedDecisions = attempt.decisions; showResult(attempt.result); } if (copy) copyAttempt(attempt); });
+attemptList.addEventListener('click', (event) => { const open = event.target.closest('[data-open-attempt]'); const copy = event.target.closest('[data-copy-attempt]'); if (!open && !copy) return; const attempt = attemptHistory.list()[Number((open ?? copy).dataset.openAttempt ?? (open ?? copy).dataset.copyAttempt)]; if (!attempt) return; if (open) { currentAttemptId = attempt.id; currentImpactBreakdown = attemptHistory.getImpactBreakdown(attempt.id, { catalogVersion: CATALOG_VERSION, modelVersion: MODEL_VERSION }); impactBreakdownUnavailable = false; acceptedDecisions = attempt.decisions; showResult(attempt.result); } if (copy) copyAttempt(attempt); });
 attemptList.addEventListener('change', (event) => { const checkbox = event.target.closest('[data-compare-attempt]'); if (!checkbox) return; const attempt = attemptHistory.list()[Number(checkbox.dataset.compareAttempt)]; if (!attempt) return; if (checkbox.checked) { if (selectedAttemptIds.size === 2) selectedAttemptIds.delete([...selectedAttemptIds][0]); selectedAttemptIds.add(attempt.id); } else selectedAttemptIds.delete(attempt.id); renderAttemptHistory(); });
 accept.addEventListener('click', () => { void acceptScenario(); });
 document.querySelector('#language-switch').addEventListener('click', (event) => { event.preventDefault(); sessionStorage.setItem(stateKey, JSON.stringify({ decisions: draft, accepted: draftAccepted })); window.location.assign(event.currentTarget.href); });
